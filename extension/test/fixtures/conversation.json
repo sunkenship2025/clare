@@ -1,0 +1,12 @@
+{
+  "uuid": "c0c0c0c0-0000-4000-8000-000000000001",
+  "name": "Trip ideas",
+  "current_leaf_message_uuid": "a3",
+  "chat_messages": [
+    { "uuid": "h1", "parent_message_uuid": "00000000-0000-4000-8000-000000000000", "sender": "human", "text": "Plan a trip", "content": [{ "type": "text", "text": "Plan a trip" }], "attachments": [{ "file_name": "notes.txt", "extracted_content": "abcdefghij" }] },
+    { "uuid": "a1", "parent_message_uuid": "h1", "sender": "assistant", "content": [{ "type": "thinking", "thinking": "hmm" }, { "type": "text", "text": "Sure!" }] },
+    { "uuid": "a2", "parent_message_uuid": "h1", "sender": "assistant", "content": [{ "type": "text", "text": "OTHER BRANCH SHOULD NOT COUNT" }] },
+    { "uuid": "h2", "parent_message_uuid": "a1", "sender": "human", "content": [{ "type": "text", "text": "Thanks" }] },
+    { "uuid": "a3", "parent_message_uuid": "h2", "sender": "assistant", "content": [{ "type": "tool_use", "name": "search", "input": { "q": "x" } }, { "type": "text", "text": "Done." }] }
+  ]
+}

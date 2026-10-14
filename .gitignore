@@ -1,0 +1,10 @@
+node_modules/
+.dev/
+dist/
+.DS_Store
+*.log
+.clare-secret*
+supabase/.temp/
+supabase/.branches/
+.claude/scheduled_tasks.lock
+.clare-extension-key.pem

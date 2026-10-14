@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>clare: your Claude usage across every device</title>
+  <meta name="description" content="clare shows your Claude account's official weekly usage in one place, works out which computer or browser used it, and enforces a weekly budget you set in Claude Code and on claude.ai.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    :root { --before: #B9B2A6; }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --before: #57534C; } }
+    :root[data-theme="dark"] { --before: #57534C; }
+
+    .hero { display: grid; gap: 2rem; padding: 1.5rem 0 3rem; }
+    .hero h1 { font-size: 2.25rem; line-height: 1.1; letter-spacing: -0.035em; max-width: 18ch; }
+    .hero .lede { color: var(--muted); font-size: 1.15rem; max-width: 52ch; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+    @media (min-width: 720px) { .hero h1 { font-size: 3.25rem; } }
+
+    .demo { margin: 0; padding: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); display: grid; gap: 1rem; }
+    .demo-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+    .demo-head strong { font-size: 1.05rem; }
+    .demo-num { font-size: 2rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1; }
+    .demo-tag { font-size: 0.8125rem; color: var(--muted); }
+    .demo-wrap { position: relative; padding-top: 1.5rem; }
+    .demo-bar { height: 40px; border-radius: 10px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+    .demo-fill { display: flex; gap: 2px; height: 100%; width: 47%; animation: fill 1400ms var(--ease) both 200ms; }
+    @keyframes fill { from { width: 0; } }
+    .demo-fill i { flex: var(--v) 1 0; background: var(--c); }
+    .demo-fill i:first-child { border-radius: 10px 0 0 10px; }
+    .demo-fill i:last-child { border-radius: 0 4px 4px 0; background: repeating-linear-gradient(135deg, var(--c) 0 2px, color-mix(in srgb, var(--c) 30%, var(--surface)) 2px 6px); }
+    .demo-marker { position: absolute; left: 90%; top: 0; bottom: 0; width: 2px; background: var(--ink); border-radius: 1px; }
+    .demo-marker span { position: absolute; right: 6px; top: 0; font-size: 0.8125rem; font-weight: 600; white-space: nowrap; line-height: 1.1rem; }
+    .demo-devices { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.55rem; }
+    .demo-devices li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.6rem; font-size: 0.95rem; }
+    .demo-devices .sw { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+    .demo-devices .sw.tex { background: repeating-linear-gradient(135deg, var(--c) 0 2px, color-mix(in srgb, var(--c) 30%, var(--surface)) 2px 6px); }
+    .demo-devices .val { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .demo-devices .who { font-weight: 600; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .demo-note { font-size: 0.9rem; color: var(--muted); }
+
+    .steps-l { list-style: none; counter-reset: s; margin: 0; padding: 0; display: grid; gap: 1.5rem; }
+    .steps-l li { counter-increment: s; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
+    .steps-l li::before {
+      content: counter(s); grid-row: span 2; display: grid; place-items: center;
+      width: 36px; height: 36px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); font-weight: 700;
+    }
+    .steps-l p { color: var(--muted); max-width: 52ch; }
+    @media (min-width: 820px) { .steps-l { grid-template-columns: repeat(3, 1fr); gap: 2rem; } }
+
+    .section { padding: 2.5rem 0; border-top: 1px solid var(--line); display: grid; gap: 1.25rem; }
+    .section > p { color: var(--muted); max-width: 64ch; }
+    .cover-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    .cover-table th, .cover-table td { text-align: left; padding: 0.7rem 0.75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .cover-table thead th { color: var(--muted); font-weight: 600; font-size: 0.875rem; }
+    .cover-table td:first-child { font-weight: 600; }
+    .cover-table .no { color: var(--muted); }
+    .table-scroll { overflow-x: auto; }
+    .facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+    .facts li { display: flex; gap: 0.75rem; align-items: flex-start; }
+    .facts .icon { color: var(--accent-text); margin-top: 0.15rem; }
+  </style>
+  <script src="config.js"></script>
+  <script type="module">
+    import { repoUrl } from "./api.js";
+    import { $, icon, markSvg } from "./ui.js";
+    $("#wordmark").innerHTML = `${markSvg(26)}<span>clare</span>`;
+    const gh = $("#github");
+    if (repoUrl) gh.href = repoUrl;
+    for (const el of document.querySelectorAll("[data-icon]")) el.outerHTML = icon(el.dataset.icon, 20);
+  </script>
+</head>
+<body>
+  <!--
+    THESIS: show the mechanism, the week's limit as one bar filled by your own devices with your budget line on it, instead of a feature grid.
+    OWN-WORLD: warm off-white ground, white panel, deep-green accent, per-device colors from the validated order.
+    STORY: one account, several machines; clare puts the official number in one place, says which device used it, and holds your budget; set up once, add devices with a link.
+    FIRST VIEWPORT: headline and two actions, the example weekly bar beneath on small screens.
+    FORM: short landing.
+  -->
+  <div class="page page-wide" style="max-width: 980px">
+    <header class="topbar">
+      <a class="wordmark" href="index.html" aria-label="clare home" id="wordmark"></a>
+      <a class="btn btn-ghost btn-sm" href="dash.html">Dashboard</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div style="display:grid;gap:1.1rem">
+          <h1>Your Claude usage, across every device.</h1>
+          <p class="lede">clare puts your account's official weekly usage in one place, works out which computer or browser used it, and holds a weekly budget you choose in Claude Code and on claude.ai. It also tells you when a device stops reporting or its setup changes.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="dash.html">Open my dashboard</a>
+            <a class="btn btn-lg" id="github" href="https://github.com/" rel="noopener">View on GitHub</a>
+          </div>
+        </div>
+
+        <figure class="demo" aria-label="Example: 47% of the weekly limit used across three devices, with a 90% budget">
+          <div class="demo-head">
+            <span><span class="demo-num">47%</span> <span class="muted">of this week's limit used</span></span>
+            <span class="demo-tag">Example</span>
+          </div>
+          <div class="demo-wrap" aria-hidden="true">
+            <div class="demo-bar">
+              <div class="demo-fill">
+                <i style="--v:6;--c:var(--before)"></i>
+                <i style="--v:24;--c:var(--p1)"></i>
+                <i style="--v:6;--c:var(--p2)"></i>
+                <i style="--v:8;--c:var(--p3)"></i>
+                <i style="--v:3;--c:var(--before)"></i>
+              </div>
+            </div>
+            <div class="demo-marker"><span>Budget 90%</span></div>
+          </div>
+          <ul class="demo-devices">
+            <li style="--c:var(--p1)"><span class="sw"></span><span class="who">MacBook Pro <span class="chip chip-ok">Enforced</span></span><span class="val">24%</span></li>
+            <li style="--c:var(--p2)"><span class="sw"></span><span class="who">Chrome on MacBook Pro <span class="chip chip-ok">Enforced</span></span><span class="val">6%</span></li>
+            <li style="--c:var(--p3)"><span class="sw"></span><span class="who">Work ThinkPad <span class="chip chip-warn">Can't verify</span></span><span class="val">8%</span></li>
+            <li style="--c:var(--before)"><span class="sw tex"></span><span class="who">Unobserved</span><span class="val">3%</span></li>
+            <li style="--c:var(--before)"><span class="sw"></span><span class="who">Before clare was set up</span><span class="val">6%</span></li>
+          </ul>
+          <p class="demo-note">The total is Claude's own meter. clare splits each rise between the devices that were active, and anything it couldn't see stays <em>unobserved</em>.</p>
+        </figure>
+      </section>
+
+      <section class="section" aria-labelledby="how-title">
+        <h2 id="how-title">How it works</h2>
+        <ol class="steps-l">
+          <li><h3>Set it up once</h3><p><code>scripts/setup.sh</code> deploys clare's small backend to your own free Supabase project and its pages to GitHub Pages, then opens your dashboard.</p></li>
+          <li><h3>Add your devices</h3><p>In the dashboard, <strong>Add a device</strong> makes a link. On each computer it's one command for Claude Code; in each browser, the clare extension.</p></li>
+          <li><h3>Stay inside your budget</h3><p>Pick how much of the weekly limit to use. Claude Code hooks and the extension stop new work at the budget, or just warn if you prefer monitor-only.</p></li>
+        </ol>
+      </section>
+
+      <section class="section" aria-labelledby="covers-title">
+        <h2 id="covers-title">What it covers</h2>
+        <p>clare only enforces where it runs. Anything else still shows up in the weekly total, as unobserved usage.</p>
+        <div class="table-scroll">
+          <table class="cover-table">
+            <thead><tr><th scope="col">Where you use Claude</th><th scope="col">Usage</th><th scope="col">Budget</th></tr></thead>
+            <tbody>
+              <tr><td>Claude Code on an enrolled computer: any terminal, VS Code, JetBrains, the desktop app</td><td>Measured exactly from Claude Code's own records, subagents included</td><td>Enforced before each prompt and during long runs</td></tr>
+              <tr><td>claude.ai in Chrome, Edge, Brave or Arc with the extension</td><td>Estimated from message length</td><td>Enforced: Send is held with a short explanation</td></tr>
+              <tr class="no"><td>Claude's phone apps, other browsers, claude.ai/code, computers without clare</td><td>Not measured; shows up as unobserved</td><td>Not enforced</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="privacy-title">
+        <h2 id="privacy-title">Privacy</h2>
+        <ul class="facts">
+          <li><span data-icon="lock"></span><span>Only numbers and device details leave your computers: token counts, model names, times, meter percentages, device names, OS and browser.</span></li>
+          <li><span data-icon="shield"></span><span>Never prompts, replies, file contents or conversation titles.</span></li>
+          <li><span data-icon="settings"></span><span>Everything runs on accounts you own: your Supabase project and your GitHub Pages site.</span></li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>For your own Claude account and your own devices.</span>
+      <span>An independent project. Not affiliated with Anthropic.</span>
+    </footer>
+  </div>
+</body>
+</html>

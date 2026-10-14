@@ -1,0 +1,20 @@
+ YOUR DEVICES                                               CLOUD (free tier)
+┌──────────────────────────────────┐                      ┌──────────────────────────────┐
+│ clare CLI  (one Go binary)       │ ── check / report ─▶ │ Supabase Edge Function /api  │
+│ managed hooks + status line:     │ ◀─ status, budget ── │   enroll · check · report    │
+│   prompt   → check budget        │                      │   meter · heartbeat · alerts │
+│   tool use → mid-turn check      │ ── heartbeat 5 min ▶ │                              │
+│   stop     → exact token count   │                      │ Postgres                     │
+│   status line → official meter % │                      │   settings · devices         │
+│ watchdog   → heartbeat, drift    │                      │   usage · meter readings     │
+│ (every terminal, VS Code,        │                      │   alerts · codes             │
+│  JetBrains, desktop app)         │                      └──────────────┬───────────────┘
+├──────────────────────────────────┤                                     │
+│ clare extension  (Chrome MV3)    │ ── usage, meter %, heartbeat ──────▶│
+│   claude.ai: meters replies,     │                                     │
+│   holds Send when over budget    │                                     ▼
+└──────────────────────────────────┘                      ┌──────────────────────────────┐
+  phone app, other browsers,                              │ clare web  (GitHub Pages)    │
+  claude.ai/code ── not enrolled ──▶ "unobserved usage"   │   enroll.html · dash.html    │
+                                                          │   install.sh · install.ps1   │
+                                                          └──────────────────────────────┘

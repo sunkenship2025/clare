@@ -1,0 +1,7 @@
+# Minimal Supabase CLI config for clare. `supabase link` fills in the project.
+project_id = "clare"
+
+[functions.api]
+# Devices authenticate with clare tokens, not Supabase JWTs.
+verify_jwt = false
+import_map = "./functions/api/deno.json"

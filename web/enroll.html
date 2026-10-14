@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Add a device to clare</title>
+  <meta name="description" content="Connect Claude Code and the browser on this computer to your clare dashboard.">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="enroll.css">
+  <script src="config.js"></script>
+  <script type="module" src="enroll.js"></script>
+</head>
+<body>
+  <!--
+    THESIS: one page that turns an enrollment link into a connected device, asking one question and showing only the steps that apply.
+    OWN-WORLD: warm off-white ground, white rounded panels, one deep-green accent; the device icon is the only illustration.
+    STORY: which account this is; where you use Claude on this computer; do one or two steps; watch each tick turn green; "This device is connected".
+    FIRST VIEWPORT: wordmark, the headline "Add this device to clare", then the single question with two choice cards.
+    FORM: guided setup checklist with live status.
+  -->
+  <div class="page">
+    <header class="topbar">
+      <a class="wordmark" href="index.html" aria-label="clare home" id="wordmark"></a>
+      <a class="btn btn-ghost btn-sm" href="dash.html">Dashboard</a>
+    </header>
+
+    <main id="enroll" data-enroll-code="">
+      <div class="enroll-loading" aria-hidden="true">
+        <div class="skel" style="width:56px;height:56px;border-radius:16px"></div>
+        <div class="skel" style="height:2.2rem;width:85%;margin-top:1.5rem"></div>
+        <div class="skel" style="height:1.1rem;width:60%;margin-top:0.75rem"></div>
+        <div class="skel" style="height:7rem;width:100%;margin-top:2rem;border-radius:14px"></div>
+      </div>
+      <p class="sr-only" role="status">Loading…</p>
+    </main>
+
+    <footer class="footer">
+      <span>clare sends usage numbers only: token counts, models, times and device names. Never prompts, replies or files.</span>
+      <span>Not affiliated with Anthropic.</span>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "clare",
+  "short_name": "clare",
+  "version": "0.2.0",
+  "description": "See your weekly Claude usage against the budget you set, and hold Send on claude.ai once that budget is used up.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "alarms", "notifications"],
+  "host_permissions": ["https://claude.ai/*", "__CLARE_API_ORIGIN__/*", "__CLARE_WEB_URL__/*"],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "clare",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["lib/page.js", "content/inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["lib/core.js", "content/claude.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["__CLARE_WEB_URL__/enroll.html*"],
+      "js": ["content/enroll.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>clare dashboard</title>
+  <meta name="description" content="Your Claude account's weekly usage, every enrolled device, and your budget, in one place.">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="dash.css">
+  <script src="config.js"></script>
+  <script type="module" src="dash.js"></script>
+</head>
+<body>
+  <!--
+    THESIS: the week's limit as one bar you can read in a second (how full, which device filled it, where the budget line is), then the devices behind it and whether clare can vouch for each. Refuses the stat-tile admin dashboard.
+    OWN-WORLD: warm off-white ground, white rounded panels, one deep-green accent; each device keeps one validated color across bar, legend, card and daily chart.
+    STORY: see how much of the week is used and against which budget, notice any device clare can't verify, add a device or change the budget.
+    FIRST VIEWPORT: account name and reset time, the headline %, the weekly-limit bar with the budget marker, then alerts, then the first device cards; "Add a device" top right.
+    FORM: operate-mode dashboard.
+  -->
+  <div class="page page-wide">
+    <header class="topbar">
+      <a class="wordmark" href="index.html" aria-label="clare home" id="wordmark"></a>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+
+    <div id="banner" aria-live="polite"></div>
+
+    <main id="app" aria-busy="true">
+      <div class="dash-loading" aria-hidden="true">
+        <div class="skel" style="height:2.1rem;width:40%"></div>
+        <div class="skel" style="height:1rem;width:30%;margin-top:0.75rem"></div>
+        <div class="skel" style="height:3.25rem;width:100%;margin-top:1.75rem;border-radius:12px"></div>
+        <div class="skel" style="height:9rem;width:100%;margin-top:2rem;border-radius:14px"></div>
+        <div class="skel" style="height:9rem;width:100%;margin-top:1rem;border-radius:14px"></div>
+      </div>
+      <p class="sr-only" role="status" id="loading-text">Loading your dashboard…</p>
+    </main>
+
+    <footer class="footer" id="footer" hidden></footer>
+  </div>
+
+  <dialog class="sheet" id="add-dialog" aria-labelledby="add-title"></dialog>
+  <dialog class="sheet" id="remove-dialog" aria-labelledby="remove-title"></dialog>
+  <dialog class="sheet drawer" id="settings-dialog" aria-labelledby="settings-title"></dialog>
+  <div class="viz-tip" id="viz-tip" role="tooltip" hidden></div>
+</body>
+</html>

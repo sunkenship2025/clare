@@ -1,0 +1,6 @@
+{
+  "apiUrl": "https://YOUR_PROJECT.supabase.co/functions/v1/api",
+  "webUrl": "https://YOUR_GITHUB_USER.github.io/clare",
+  "releasesUrl": "https://github.com/YOUR_GITHUB_USER/clare/releases/latest/download",
+  "extensionUrl": ""
+}

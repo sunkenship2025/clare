@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Dev-only screenshot harness: renders a page at a fixed width inside an iframe and can
+     script it. frame.html?src=..&w=390&h=1400[&ls=key=value][&click=<css>][&type=<css>|<text>][&attr=<css>|<name>|<value>]
+     Steps (click/type) run in order, 700 ms apart, starting 1.2 s after load. -->
+<html><head><meta charset="utf-8"><style>html,body{margin:0;background:#888}iframe{border:0;display:block}</style></head>
+<body><script>
+  const q = new URLSearchParams(location.search);
+  for (const kv of q.getAll("ls")) { const i = kv.indexOf("="); try { localStorage.setItem(kv.slice(0, i), kv.slice(i + 1)); } catch {} }
+  const f = document.createElement("iframe");
+  f.width = q.get("w") || "390"; f.height = q.get("h") || "1400"; f.src = q.get("src");
+  document.body.appendChild(f);
+  const steps = [];
+  for (const [k, v] of q) if (k === "click" || k === "type" || k === "attr") steps.push([k, v]);
+  f.addEventListener("load", () => {
+    steps.forEach(([k, v], i) => setTimeout(() => {
+      const doc = f.contentDocument;
+      if (k === "click") doc.querySelector(v)?.click();
+      else if (k === "attr") { const [sel, name, value] = v.split("|"); doc.querySelector(sel)?.setAttribute(name, value); }
+      else { const [sel, text] = v.split("|"); const el = doc.querySelector(sel); if (el) { el.value = text; el.dispatchEvent(new Event("input", { bubbles: true })); } }
+    }, 1200 + i * 700));
+  });
+</script></body></html>

@@ -1,0 +1,54 @@
+# Push a tag like v0.1.0 (scripts/setup.sh does it for you) to build the CLI binaries and the
+# extension zip, attach them to a GitHub release, and publish web/ to GitHub Pages.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+      - name: Build site, extension and binaries from clare.config.json
+        run: node scripts/build.mjs
+      - name: Publish downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || TAG="v$(node -p 'require("./package.json").version')"
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "clare $TAG" \
+              --notes "Downloads for clare $TAG. You don't need this page: the dashboard's Add a device link installs everything."
+          gh release upload "$TAG" dist/bin/* dist/clare-extension.zip --clobber
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

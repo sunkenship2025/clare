@@ -1,0 +1,19 @@
+{
+  "name": "clare",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-device usage monitoring and budget enforcement for your Claude account.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/dev-server.ts",
+    "test": "node --test tests/ && node --test extension/test/",
+    "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "postgres": "3.4.9"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

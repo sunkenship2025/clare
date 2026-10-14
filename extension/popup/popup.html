@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>clare</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="top">
+      <span class="brand">
+        <svg class="glyph" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="10" cy="10" r="7" fill="none" stroke="var(--accent-soft)" stroke-width="3" />
+          <circle cx="10" cy="10" r="7" fill="none" stroke="var(--accent)" stroke-width="3" pathLength="100"
+            stroke-dasharray="75 25" transform="rotate(-90 10 10)" />
+        </svg>
+        clare
+      </span>
+      <span id="hello" class="hello"></span>
+    </header>
+
+    <main>
+      <section id="view-loading" class="view center">
+        <p class="detail">One moment…</p>
+      </section>
+
+      <section id="view-paired" class="view" hidden>
+        <div class="ring-wrap">
+          <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+            <circle class="track" cx="60" cy="60" r="50" />
+            <circle id="arc" class="arc" cx="60" cy="60" r="50" pathLength="100" stroke-dasharray="0 100"
+              transform="rotate(-90 60 60)" />
+          </svg>
+          <div class="ring-label">
+            <span id="pct" class="pct">–</span>
+            <span id="pct-sub" class="pct-sub">of weekly budget used</span>
+          </div>
+        </div>
+        <h1 id="headline" class="headline">Checking…</h1>
+        <p id="detail" class="detail"></p>
+        <p id="offline" class="note" hidden>Can't reach clare right now, so this may be a little out of date.</p>
+
+        <section class="card" aria-labelledby="this-week">
+          <h2 id="this-week">This week</h2>
+          <ul class="rows">
+            <li class="row">
+              <span class="what">Weekly limit used</span>
+              <span id="account-used" class="state num">–</span>
+            </li>
+            <li id="row-device" class="row" hidden>
+              <span class="what">This browser</span>
+              <span id="device-used" class="state num"></span>
+            </li>
+          </ul>
+          <p id="basis" class="basis"></p>
+        </section>
+
+        <section class="card" aria-labelledby="connection">
+          <h2 id="connection">Connection</h2>
+          <ul class="rows">
+            <li class="row">
+              <span id="browser-dot" class="dot ok" aria-hidden="true"></span>
+              <span class="what">This browser</span>
+              <span id="browser-state" class="state">Connected</span>
+            </li>
+            <li id="row-terminal" class="row" hidden>
+              <span id="term-dot" class="dot" aria-hidden="true"></span>
+              <span class="what">Claude Code</span>
+              <span id="term-state" class="state"></span>
+            </li>
+          </ul>
+        </section>
+
+        <button id="open-dash" class="btn secondary" type="button">Open dashboard</button>
+      </section>
+
+      <section id="view-unpaired" class="view" hidden>
+        <h1 class="headline">Connect this browser</h1>
+        <p id="unpaired-why" class="detail">
+          In the clare dashboard, choose <strong>Add a device</strong> and open the link in this browser,
+          or paste it here.
+        </p>
+        <form id="pair-form" novalidate>
+          <label for="link" class="label">Enroll link or code</label>
+          <input id="link" type="text" placeholder="Paste the link here" autocomplete="off" spellcheck="false" />
+          <button class="btn primary" type="submit" id="connect">Connect</button>
+          <p id="pair-error" class="error" role="alert"></p>
+        </form>
+      </section>
+    </main>
+
+    <footer class="foot">Not affiliated with Anthropic</footer>
+
+    <script src="../lib/core.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

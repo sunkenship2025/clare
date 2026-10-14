@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      CLARE_TEST_PG: postgres://postgres:postgres@localhost:5432
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: npm ci
+      - name: Backend + extension tests
+        run: npm test
+      - name: Type-check the edge function
+        run: deno check --config supabase/functions/api/deno.json supabase/functions/api/index.ts
+      - name: CLI tests
+        working-directory: cli
+        run: go vet ./... && go test ./...
