@@ -52,6 +52,8 @@ if ($env:CLARE_BINARY) {
 # After enrolling, clare walks through adding its extension to each browser on this computer.
 $enrollArgs = @('enroll', $Code, '--api', $Api, '--pause')
 if ($Web) { $enrollArgs += @('--web', $Web) }
+# e.g. $env:CLARE_EXTRA='--label joy --profile pranav'
+if ($env:CLARE_EXTRA) { $enrollArgs += ($env:CLARE_EXTRA -split '\s+' | Where-Object { $_ }) }
 
 Write-Host ''
 Write-Host '  Windows will ask if clare can make changes. Click "Yes" to finish setting up.'

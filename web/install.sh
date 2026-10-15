@@ -1,7 +1,7 @@
 #!/bin/sh
 # clare installer — connects Claude Code on this computer to clare.
 #
-#   curl -fsSL __CLARE_WEB_URL__/install.sh | sh -s -- <enrollment-code>
+#   curl -fsSL __CLARE_WEB_URL__/install.sh | sh -s -- <enrollment-code> [--label NAME] [--profile NAME]
 #
 # Downloads one small program (clare), then asks for your password once (sudo) so it can
 # install Claude Code managed settings for every terminal, editor and the desktop app.
@@ -11,6 +11,8 @@
 set -eu
 
 CODE="${1:-${CLARE_CODE:-}}"
+[ $# -gt 0 ] && shift
+EXTRA="$*" # passed on to clare enroll, e.g. --label joy --profile pranav
 API="${CLARE_API_URL:-__CLARE_API_URL__}"
 WEB="${CLARE_WEB_URL:-__CLARE_WEB_URL__}"
 RELEASES="${CLARE_RELEASES_URL:-__CLARE_RELEASES_URL__}"
@@ -66,6 +68,8 @@ chmod +x "$bin"
 # After enrolling, clare walks through adding its extension to each browser on this computer.
 set -- enroll "$CODE" --api "$API"
 [ -n "$WEB" ] && set -- "$@" --web "$WEB"
+# shellcheck disable=SC2086
+[ -n "$EXTRA" ] && set -- "$@" $EXTRA
 
 if [ "$(id -u)" -eq 0 ]; then
   "$bin" "$@"
