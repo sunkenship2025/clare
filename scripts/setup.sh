@@ -73,7 +73,12 @@ $SB projects list >/dev/null 2>&1 || $SB login
 
 if [ -z "${PROJECT_REF:-}" ]; then
   ORG=$($SB orgs list -o json | json 'j=>(j[0]||{}).id')
-  [ -n "$ORG" ] || { echo "Create a free Supabase organization at https://supabase.com/dashboard first."; exit 1; }
+  if [ -z "$ORG" ]; then
+    info "Creating a free Supabase organization…"
+    $SB orgs create "clare" >/dev/null
+    ORG=$($SB orgs list -o json | json 'j=>(j[0]||{}).id')
+  fi
+  [ -n "$ORG" ] || { echo "Create a free Supabase organization at https://supabase.com/dashboard first, then re-run."; exit 1; }
   REGION=$(ask "Server region near you? [ap-south-1 = Mumbai] (us-east-1, eu-west-1, …)" ap-south-1)
   DB_PASSWORD=$(openssl rand -hex 20)
   save DB_PASSWORD "$DB_PASSWORD"
