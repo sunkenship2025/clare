@@ -181,13 +181,20 @@ function enforcementChip(d) {
 
 function unverifiedWhy(d) {
   if (d.enforcement !== "unverified") return "";
+  // On a computer's card, say which part it is.
+  const root = rootOf(d);
+  if (root !== d) {
+    const name = esc(browserName(d.browser) || "The browser");
+    if (d.connectivity === "problem") return `${name} reported a problem${d.problem ? ` (${esc(d.problem)})` : ""}. Open the clare extension's popup there to check it.`;
+    return `${name} last checked in ${d.last_seen_at ? esc(relTime(d.last_seen_at)) : "never"}, so clare can't confirm the budget holds in it. If ${name} is closed, there's nothing to do; it catches up when it's open again. If it's open, click the clare icon in its toolbar to reconnect.`;
+  }
   const fix = d.kind === "cli"
     ? "Run <code>sudo clare doctor</code> on that computer to check and repair it."
     : "Open the clare extension's popup in that browser to check it.";
   if (d.connectivity === "problem") {
     return `Its last check-in reported a problem${d.problem ? ` (${esc(d.problem)})` : ""}. clare restores its own files when it can. ${fix}`;
   }
-  return `It hasn't checked in ${d.last_seen_at ? `since ${esc(relTime(d.last_seen_at))}` : "yet"}, so clare can't confirm the budget holds there. If it's asleep or offline, there's nothing to do; it catches up when it's back.`;
+  return `It ${d.last_seen_at ? `last checked in ${esc(relTime(d.last_seen_at))}` : "hasn't checked in yet"}, so clare can't confirm the budget holds there. If it's asleep or offline, there's nothing to do; it catches up when it's back.`;
 }
 
 const STATE_CHIP = {
