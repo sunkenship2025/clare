@@ -197,6 +197,10 @@ func (a *App) runEnroll(args []string) int {
 
 	if !f.noBrowser {
 		a.runBrowserGuide(u, cfg, f.code)
+	} else if f.pause && a.GOOS == "windows" {
+		// install.ps1 runs the browser guide unelevated in the first window.
+		u.blank()
+		u.line("  %s", u.bold("Close this window. Your browsers are next, back in the first window."))
 	}
 	u.blank()
 	return 0

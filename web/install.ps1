@@ -14,7 +14,8 @@ function Fail([string]$msg) {
   Write-Host ''
   Write-Host "  $msg" -ForegroundColor Red
   Write-Host ''
-  exit 1
+  # throw, not exit: under `irm | iex`, exit would close the PowerShell window.
+  throw 'clare setup stopped.'
 }
 
 $Code = $env:CLARE_CODE
@@ -49,8 +50,9 @@ if ($env:CLARE_BINARY) {
   }
 }
 
-# After enrolling, clare walks through adding its extension to each browser on this computer.
-$enrollArgs = @('enroll', $Code, '--api', $Api, '--pause')
+# Enrolling needs administrator rights, so it runs in its own elevated window. Browsers must
+# open as you, not as administrator, so the browser guide runs afterwards in this window.
+$enrollArgs = @('enroll', $Code, '--api', $Api, '--pause', '--no-browser')
 if ($Web) { $enrollArgs += @('--web', $Web) }
 # e.g. $env:CLARE_EXTRA='--label joy --profile pranav'
 if ($env:CLARE_EXTRA) { $enrollArgs += ($env:CLARE_EXTRA -split '\s+' | Where-Object { $_ }) }
@@ -69,6 +71,8 @@ try {
 Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
 if ($p.ExitCode -eq 0) {
   Write-Host "  All set! Claude Code on this computer is now connected to clare." -ForegroundColor Green
+  $installed = Join-Path $env:ProgramFiles 'ClaudeCode\clare\clare.exe'
+  if (Test-Path $installed) { & $installed browser }
 } else {
   Write-Host "  Setup didn't finish. Check the other window for what went wrong, then try again." -ForegroundColor Yellow
 }
