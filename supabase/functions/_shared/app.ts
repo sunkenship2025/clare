@@ -5,6 +5,8 @@ import type postgres from "postgres";
 import {
   type Attribution,
   type CapacitySettings,
+  type LearnedRates,
+  type Source,
   type Plan,
   type Reading,
   type Status,
@@ -17,11 +19,14 @@ import {
   enforcement,
   evaluate,
   fmtPct,
+  learnRates,
   modelFamily,
   normalizeEvent,
   normalizeReading,
   OFFLINE_ALERT_MS,
+  RATE_MIN_POINTS,
   safeZone,
+  sourceWeights,
   VERSION,
 } from "./core.ts";
 
@@ -79,6 +84,7 @@ interface SettingsRow extends CapacitySettings {
   enforce: boolean;
   strict_hooks: boolean;
   calibrated_at: Date | null;
+  source_rates: LearnedRates | null;
   week_anchor: Date;
   meter: Record<string, unknown> | null;
   meter_at: Date | null;
@@ -230,15 +236,16 @@ async function week(ctx: Ctx): Promise<Attribution> {
   const readings = await ctx.sql<{ at: Date; week_pct: number; week_resets_at: Date }[]>`
     select at, week_pct::float8 as week_pct, week_resets_at
     from clare_meter_readings where at >= ${since} order by at, id`;
-  const activity = await ctx.sql<{ device_id: string | null; at: Date; credits: number }[]>`
-    select device_id, at, credits::float8 as credits from clare_usage where at >= ${since}`;
+  const activity = await ctx.sql<{ device_id: string | null; at: Date; credits: number; source: Source }[]>`
+    select device_id, at, credits::float8 as credits, source from clare_usage where at >= ${since}`;
   ctx.attribution = attribute({
     readings: readings.map((r) => ({ at: new Date(r.at), week_pct: r.week_pct, week_resets_at: new Date(r.week_resets_at) })),
-    activity: activity.map((a) => ({ device_id: a.device_id, at: new Date(a.at), credits: a.credits })),
+    activity: activity.map((a) => ({ device_id: a.device_id, at: new Date(a.at), credits: a.credits, source: a.source })),
     now: ctx.now,
     createdAt: new Date(ctx.settings.created_at),
     anchor: new Date(ctx.settings.week_anchor),
     capacity: capacity(ctx.settings).value,
+    rates: ctx.settings.source_rates,
   });
   return ctx.attribution;
 }
@@ -336,6 +343,14 @@ async function storeReading(ctx: Ctx, r: Reading, deviceId: string): Promise<boo
   if (same) return false;
 
   const w = await week(ctx);
+  // Learn from single-source rises newer than the last ones folded in.
+  const since = s.source_rates?.at ? Date.parse(s.source_rates.at) : 0;
+  const fresh = w.samples.filter((x) => x.at.getTime() > since);
+  if (fresh.length) {
+    const rates = learnRates(s.source_rates, fresh);
+    await ctx.sql`update clare_settings set source_rates = ${ctx.sql.json(rates as postgres.JSONValue)} where id = 1`;
+    s.source_rates = rates;
+  }
   if (!s.calibrated_at || ctx.now.getTime() - new Date(s.calibrated_at).getTime() >= CALIBRATE_EVERY_MS) {
     const c = calibrate(s.capacity_calibrated, w.attributed_credits, w.attributed_points);
     if (c !== s.capacity_calibrated) {
@@ -713,6 +728,15 @@ async function me(ctx: Authed) {
       unobserved: w.unobserved,
       before_clare: w.before_clare,
       pending: w.pending,
+      // How clare weighs claude.ai's estimated tokens against Claude Code's exact ones.
+      estimation: {
+        browser_weight: sourceWeights(s.source_rates).web,
+        learned: {
+          cli: Math.round((s.source_rates?.cli?.points ?? 0) * 10) / 10,
+          web: Math.round((s.source_rates?.web?.points ?? 0) * 10) / 10,
+        },
+        min_points: RATE_MIN_POINTS,
+      },
     },
     status: await statusFor(ctx, ctx.device),
     devices: devices.map((d) => {

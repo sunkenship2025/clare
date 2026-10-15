@@ -188,6 +188,7 @@ function me() {
       unobserved: totals.unobserved,
       before_clare: totals.before_clare,
       pending: totals.pending,
+      estimation: { browser_weight: 1.6, learned: { cli: 14.2, web: 4.1 }, min_points: 3 },
     },
     status: status(),
     devices: db.devices.map((d) => ({

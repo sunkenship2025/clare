@@ -152,6 +152,16 @@ Results: account `used` = running max + pending; per device `used` = attributed 
 (pro 60, max5 300, max20 1200). Calibration, at most every 10 min when a reading arrives and the week has
 ≥ 5 attributed points: `implied = attributed credits ÷ attributed points × 100`, blended 70/30 with the previous value.
 
+### Learned source weights
+
+Claude Code's credits are exact; the extension estimates claude.ai's from the page. A meter rise during which only one
+source (`cli` or `web`) had activity is a clean sample of that source's points per credit. `attribute()` returns this
+week's samples; `storeReading` folds new ones (`learnRates`) into `clare_settings.source_rates`: decayed sums with a
+14-day half-life. Once both sources have ≥ 3 points of samples, `sourceWeights` gives web credits the weight
+`rate_web / rate_cli` (clamped to 0.2–5; cli = 1) when splitting rises and estimating pending, and the estimate basis
+uses the learned cli rate instead of `100 / capacity`. `/me` reports it as `account.estimation`
+(`browser_weight`, `learned.{cli,web}` points, `min_points`).
+
 ## Status object (returned by /check, /report, /heartbeat, /enroll; `status` inside /me)
 
 ```jsonc

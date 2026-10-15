@@ -8,11 +8,14 @@ import {
   credits,
   enforcement,
   evaluate,
+  learnedRate,
+  learnRates,
   modelFamily,
   normalizeEvent,
   normalizeReading,
   pickWeek,
   refillPhrase,
+  sourceWeights,
   weekWindow,
 } from "../supabase/functions/_shared/core.ts";
 
@@ -298,4 +301,59 @@ test("connectivity and enforcement", () => {
   assert.equal(enforcement("offline"), "unverified");
   assert.equal(enforcement("problem"), "unverified");
   assert.equal(enforcement("removed"), "removed");
+});
+
+// ── Learned rates ────────────────────────────────────────────
+
+const web = (device: string, h: number, c: number) => ({ device_id: device, at: t(h), credits: c, source: "web" as const });
+const cli = (device: string, h: number, c: number) => ({ device_id: device, at: t(h), credits: c, source: "cli" as const });
+
+test("single-source rises become samples; mixed ones don't", () => {
+  const a = attribute({
+    ...base,
+    readings: [reading(1, 0), reading(10, 4), reading(20, 10), reading(30, 13)],
+    activity: [cli("mac", 5, 2), web("chrome", 15, 2), cli("mac", 25, 1), web("chrome", 26, 1)],
+  });
+  assert.deepEqual(a.samples.map((x) => [x.source, x.points, x.credits]), [["cli", 4, 2], ["web", 6, 2]]);
+});
+
+test("learned rates need enough points from both sources before weighting", () => {
+  assert.deepEqual(sourceWeights(null), { cli: 1, web: 1 });
+  const one = learnRates(null, [{ source: "cli", points: 4, credits: 20, at: t(1) }]);
+  assert.equal(learnedRate(one, "cli"), 0.2);
+  assert.equal(learnedRate(one, "web"), null);
+  assert.deepEqual(sourceWeights(one), { cli: 1, web: 1 }, "web has no samples yet");
+  const both = learnRates(one, [{ source: "web", points: 3, credits: 10, at: t(2) }]);
+  assert.ok(Math.abs(sourceWeights(both).web - 1.5) < 0.01, "0.3 vs 0.2 points per credit");
+  const wild = learnRates(both, [{ source: "web", points: 300, credits: 10, at: t(3) }]);
+  assert.equal(sourceWeights(wild).web, 5, "clamped");
+});
+
+test("older samples fade with a 14-day half-life", () => {
+  const r = learnRates(null, [
+    { source: "cli", points: 4, credits: 10, at: t(0) },
+    { source: "cli", points: 4, credits: 40, at: new Date(t(0).getTime() + 14 * D) },
+  ]);
+  assert.equal(r.cli!.points, 6); // 4 halved + 4
+  assert.equal(r.cli!.credits, 45); // 10 halved + 40
+});
+
+test("learned weights shift the split and the estimates toward the browser", () => {
+  const rates = learnRates(null, [
+    { source: "cli", points: 10, credits: 50, at: t(-100) }, // 0.2 / credit
+    { source: "web", points: 10, credits: 25, at: t(-90) }, // 0.4 / credit → browser weighs 2×
+  ]);
+  const a = attribute({
+    ...base,
+    rates,
+    readings: [reading(1, 0), reading(10, 6)],
+    activity: [cli("mac", 5, 2), web("chrome", 6, 2), web("chrome", 20, 1)],
+  });
+  assert.equal(a.devices.get("mac")!.attributed, 2); // 2 of 6 weighted credits
+  assert.equal(a.devices.get("chrome")!.attributed, 4);
+  assert.equal(a.devices.get("chrome")!.pending, 2); // 1 credit × weight 2 × this week's 1 point per weighted credit
+  const est = attribute({ ...base, rates, readings: [], activity: [cli("mac", 5, 10), web("chrome", 6, 10)] });
+  assert.equal(est.basis, "estimate");
+  assert.equal(est.devices.get("mac")!.points, 2); // 10 × 0.2
+  assert.equal(est.devices.get("chrome")!.points, 4); // 10 × 2 × 0.2
 });

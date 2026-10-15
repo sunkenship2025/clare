@@ -1,7 +1,7 @@
 // Pure clare logic: rates, credits, meter readings, attribution, budgets, status copy.
 // No I/O and no runtime-specific APIs, so it runs unchanged in Deno (edge) and Node (dev + tests).
 
-export const VERSION = "0.2.3";
+export const VERSION = "0.2.4";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -201,10 +201,82 @@ export interface ReadingPoint {
   week_resets_at: Date;
 }
 
+export type Source = "cli" | "web";
+
 export interface Activity {
   device_id: string | null;
   at: Date;
   credits: number;
+  source?: Source; // cli = Claude Code (exact tokens), web = claude.ai (estimated from the page)
+}
+
+// ── Learned rates ────────────────────────────────────────────
+//
+// Claude Code counts tokens exactly; the extension estimates claude.ai's from the page, so the
+// two can be off from each other. Meter rises during which only one source was active are clean
+// samples of how many points a credit of that source really costs. They're folded into decayed
+// sums (half-life 14 days), and once both sources have enough, each source's credits are
+// weighted by its rate when splitting rises and estimating.
+
+/** Decayed sums of clean samples for one source. */
+export interface SourceRate {
+  points: number;
+  credits: number;
+}
+
+export interface LearnedRates {
+  cli?: SourceRate;
+  web?: SourceRate;
+  at?: string; // when the sums were last decayed
+}
+
+export interface Sample {
+  source: Source;
+  points: number;
+  credits: number;
+  at: Date;
+}
+
+export const RATE_MIN_POINTS = 3;
+const RATE_HALF_LIFE_MS = 14 * DAY_MS;
+
+/** Points per credit learned for a source, or null without enough samples. */
+export function learnedRate(rates: LearnedRates | null | undefined, src: Source): number | null {
+  const r = rates?.[src];
+  return r && r.points >= RATE_MIN_POINTS && r.credits > 0 ? r.points / r.credits : null;
+}
+
+/**
+ * How much one credit of each source weighs relative to Claude Code (cli = 1). Both sources
+ * need enough samples; until then every credit weighs the same.
+ */
+export function sourceWeights(rates: LearnedRates | null | undefined): Record<Source, number> {
+  const cli = learnedRate(rates, "cli");
+  const web = learnedRate(rates, "web");
+  if (cli == null || web == null) return { cli: 1, web: 1 };
+  // Clamp: a wild ratio is more likely noise (e.g. unobserved use during a "solo" window).
+  return { cli: 1, web: Math.min(5, Math.max(0.2, web / cli)) };
+}
+
+/** Fold new samples into the learned sums, decaying older ones. */
+export function learnRates(prev: LearnedRates | null | undefined, samples: Sample[]): LearnedRates {
+  const out: LearnedRates = {
+    cli: prev?.cli ? { ...prev.cli } : undefined,
+    web: prev?.web ? { ...prev.web } : undefined,
+    at: prev?.at,
+  };
+  for (const smp of [...samples].sort((a, b) => a.at.getTime() - b.at.getTime())) {
+    const last = out.at ? Date.parse(out.at) : smp.at.getTime();
+    const decay = Math.pow(0.5, Math.max(0, smp.at.getTime() - last) / RATE_HALF_LIFE_MS);
+    for (const k of ["cli", "web"] as const) {
+      const r = out[k];
+      if (r) out[k] = { points: round6(r.points * decay), credits: round6(r.credits * decay) };
+    }
+    const r = out[smp.source] ?? { points: 0, credits: 0 };
+    out[smp.source] = { points: round6(r.points + smp.points), credits: round6(r.credits + smp.credits) };
+    out.at = new Date(Math.max(last, smp.at.getTime())).toISOString();
+  }
+  return out;
 }
 
 export interface DeviceUsage {
@@ -227,6 +299,7 @@ export interface Attribution {
   attributed_points: number;
   attributed_credits: number;
   devices: Map<string, DeviceUsage>;
+  samples: Sample[]; // this week's single-source rises, for learnRates
 }
 
 const SAME_WEEK_MS = HOUR_MS;
@@ -256,6 +329,7 @@ export interface AttributionInput {
   createdAt: Date; // when clare was set up
   anchor: Date; // fallback week anchor (the last known reset)
   capacity: number; // credits per week, for estimates
+  rates?: LearnedRates | null; // learned per-source rates (see learnRates)
 }
 
 /**
@@ -266,7 +340,11 @@ export function attribute(i: AttributionInput): Attribution {
   const week = pickWeek(i.readings, i.now, i.anchor);
   const start = week.start.getTime();
   const nowMs = i.now.getTime();
-  const fallbackPpc = i.capacity > 0 ? 100 / i.capacity : 0;
+  const weights = sourceWeights(i.rates);
+  const tuned = weights.web !== 1;
+  // Points per (weighted) credit with nothing better to go on: the learned Claude Code rate once
+  // sources are weighted against it, else the plan's capacity.
+  const fallbackPpc = (tuned ? learnedRate(i.rates, "cli") : null) ?? (i.capacity > 0 ? 100 / i.capacity : 0);
   const devices = new Map<string, DeviceUsage>();
   const dev = (id: string | null) => {
     const k = id ?? "";
@@ -278,12 +356,15 @@ export function attribute(i: AttributionInput): Attribution {
   const activity = i.activity
     .filter((a) => a.at.getTime() >= start && a.at.getTime() <= nowMs && a.credits > 0)
     .sort((a, b) => a.at.getTime() - b.at.getTime());
+  const weightOf = (a: Activity) => a.credits * weights[a.source ?? "cli"];
   for (const a of activity) dev(a.device_id).credits += a.credits;
 
   if (week.basis === "estimate") {
     let used = 0;
-    for (const d of devices.values()) {
-      d.points = round3(d.credits * fallbackPpc);
+    const weighted = new Map<string, number>();
+    for (const a of activity) weighted.set(a.device_id ?? "", (weighted.get(a.device_id ?? "") ?? 0) + weightOf(a));
+    for (const [id, d] of devices) {
+      d.points = round3((weighted.get(id) ?? 0) * fallbackPpc);
       used += d.points;
     }
     return {
@@ -299,6 +380,7 @@ export function attribute(i: AttributionInput): Attribution {
       attributed_points: 0,
       attributed_credits: 0,
       devices,
+      samples: [],
     };
   }
 
@@ -318,8 +400,11 @@ export function attribute(i: AttributionInput): Attribution {
     walk = readings.slice(1);
   }
 
+  // Weighted credits per device since the last rise, and raw credits per source (for samples).
   const acc = new Map<string, number>();
   let accTotal = 0;
+  const accSrc: Record<Source, number> = { cli: 0, web: 0 };
+  const samples: Sample[] = [];
   let unobserved = 0;
   let attributedPoints = 0;
   let attributedCredits = 0;
@@ -329,8 +414,10 @@ export function attribute(i: AttributionInput): Attribution {
       const a = activity[k];
       if (a.at.getTime() <= from) continue;
       const id = a.device_id ?? "";
-      acc.set(id, (acc.get(id) ?? 0) + a.credits);
-      accTotal += a.credits;
+      const w = weightOf(a);
+      acc.set(id, (acc.get(id) ?? 0) + w);
+      accTotal += w;
+      accSrc[a.source ?? "cli"] += a.credits;
     }
   };
 
@@ -342,8 +429,12 @@ export function attribute(i: AttributionInput): Attribution {
       for (const [id, c] of acc) dev(id).attributed += (rise * c) / accTotal;
       attributedPoints += rise;
       attributedCredits += accTotal;
+      // Only one source active: a clean sample of what its credits really cost.
+      const solo = accSrc.cli > 0 !== accSrc.web > 0 ? (accSrc.cli > 0 ? "cli" : "web") : null;
+      if (solo) samples.push({ source: solo, points: rise, credits: accSrc[solo], at: r.at });
       acc.clear();
       accTotal = 0;
+      accSrc.cli = accSrc.web = 0;
     } else {
       unobserved += rise;
     }
@@ -375,6 +466,7 @@ export function attribute(i: AttributionInput): Attribution {
     attributed_points: round3(attributedPoints),
     attributed_credits: round6(attributedCredits),
     devices,
+    samples,
   };
 }
 

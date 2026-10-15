@@ -324,6 +324,20 @@ function overviewHtml() {
     notes.push(`Includes about ${pts(acc.pending)} from your latest activity that Claude's meter hasn't shown yet.`);
   }
   for (const s of segs) if (s.note) notes.push(`<strong>${esc(s.name)}:</strong> ${esc(s.note)}`);
+  const est = acc.estimation;
+  if (est && devices().some((d) => d.kind === "extension" && !isGone(d))) {
+    const w = est.browser_weight;
+    if (w && Math.abs(w - 1) >= 0.05) {
+      notes.push(`<strong>Tuned to your usage:</strong> claude.ai use counts ${w.toFixed(1)}× what the extension estimates from the page, learned from times only Claude Code or only claude.ai was in use.`);
+    } else if (w === 1) {
+      const need = est.min_points || 3;
+      const cli = Math.min(est.learned?.cli || 0, need);
+      const web = Math.min(est.learned?.web || 0, need);
+      if (cli < need || web < need) {
+        notes.push(`<strong>Still learning:</strong> clare compares Claude Code and claude.ai usage from times only one of them was in use (so far ${pts(cli)} of ${need}% from Claude Code alone, ${pts(web)} of ${need}% from claude.ai alone), then weighs them more accurately.`);
+      }
+    }
+  }
 
   const budgetLabel = budget >= 100 ? "Budget: full limit" : `Budget ${pts(budget)}`;
   const enforceLine = acc.enforce === false

@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.3");
+  assert.equal(r.data.version, "0.2.4");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");
@@ -566,4 +566,13 @@ test("a browser added from a computer belongs to it: one cap, one card, removed 
   assert.equal(r.status, 200);
   r = await call("POST", "/check", { token: chrome2 });
   assert.equal(r.status, 410);
+});
+
+test("single-source meter rises are learned and reported on /me", async () => {
+  const [row] = await sql`select source_rates from clare_settings where id = 1`;
+  const learned = row.source_rates as { cli?: { points: number }; web?: { points: number } };
+  assert.ok((learned?.cli?.points ?? 0) + (learned?.web?.points ?? 0) > 0, JSON.stringify(learned));
+  const r = await call("GET", "/me", { token: s.web });
+  assert.equal(typeof r.data.account.estimation.browser_weight, "number");
+  assert.equal(r.data.account.estimation.min_points, 3);
 });
