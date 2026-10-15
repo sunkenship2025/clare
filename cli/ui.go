@@ -19,7 +19,7 @@ func newUI(w io.Writer) *ui {
 	color := false
 	if f, ok := w.(*os.File); ok && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
 		if st, err := f.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
-			color = true
+			color = enableColor(f)
 		}
 	}
 	return &ui{w: w, color: color}

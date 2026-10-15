@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -282,6 +283,10 @@ func (a *App) explainEnrollError(u *ui, err error) {
 	switch code := apiErrorCode(err); {
 	case isOffline(err):
 		u.fail("Couldn't reach the clare server. Check your internet connection and try again.")
+		var oe *OfflineError
+		if errors.As(err, &oe) {
+			u.line("    %s", u.dim("Details: "+oe.Err.Error()))
+		}
 	case code == "expired_code" || code == "expired":
 		u.fail("This enroll link has expired.")
 		u.line("    In your clare dashboard, choose \"Add a device\" to get a new one.")
