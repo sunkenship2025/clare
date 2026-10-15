@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.0");
+  assert.equal(r.data.version, "0.2.1");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");
@@ -513,4 +513,57 @@ test("bad tokens, unknown routes, CORS", async () => {
   const pre = await handle(new Request("http://local/api/check", { method: "OPTIONS" }));
   assert.equal(pre.status, 204);
   assert.equal(pre.headers.get("access-control-allow-origin"), "*");
+});
+
+test("a browser added from a computer belongs to it: one cap, one card, removed together", async () => {
+  const me = async () => (await call("GET", "/me", { token: s.web })).data;
+  let r = await call("POST", "/enroll-code", { token: s.web, body: { admin: true } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Studio", info: { os: "macOS", machine_id: "studio-1" } } });
+  const studio = r.data.token;
+  const studioId = r.data.device_id;
+
+  // `clare browser` on that computer mints a browser code that carries it.
+  r = await call("POST", "/enroll-code", { token: studio, body: { kind: "extension", admin: true } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "extension", label: "Chrome on Mac", info: { machine_id: "studio-chrome" } } });
+  assert.equal(r.status, 200);
+  const chrome = r.data.token;
+  const chromeId = r.data.device_id;
+  assert.equal(r.data.status.device.id, studioId, "the browser is judged as its computer");
+  assert.equal(r.data.status.device.label, "Studio");
+  assert.equal((await me()).devices.find((d: { id: string }) => d.id === chromeId).parent_id, studioId);
+
+  // The computer's cap covers the browser.
+  r = await call("PATCH", `/devices/${studioId}`, { token: s.web, body: { budget_pct: 7 } });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/check", { token: chrome });
+  assert.equal(r.data.status.device.budget, 7);
+
+  // Unlinked on the dashboard, the browser stands alone; linked again, it's back.
+  r = await call("PATCH", `/devices/${chromeId}`, { token: s.web, body: { parent_id: null } });
+  r = await call("POST", "/check", { token: chrome });
+  assert.equal(r.data.status.device.id, chromeId);
+  r = await call("PATCH", `/devices/${studioId}`, { token: s.web, body: { parent_id: chromeId } });
+  assert.equal(r.status, 400, "only browsers can belong to a computer");
+  r = await call("PATCH", `/devices/${chromeId}`, { token: s.web, body: { parent_id: studioId } });
+  assert.equal(r.status, 200);
+
+  // Re-enrolling the browser (same install) keeps its computer.
+  r = await call("POST", "/enroll-code", { token: s.web, body: { kind: "extension" } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "extension", label: "Chrome on Mac", info: { machine_id: "studio-chrome" } } });
+  const chrome2 = r.data.token;
+  assert.equal(r.data.status.device.id, studioId);
+
+  // Reinstalling clare on the computer: its browsers follow the new device.
+  r = await call("POST", "/enroll-code", { token: s.web, body: { admin: true } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Studio", info: { machine_id: "studio-1" } } });
+  const studio2Id = r.data.device_id;
+  r = await call("POST", "/check", { token: chrome2 });
+  assert.equal(r.data.status.device.id, studio2Id);
+  assert.equal(r.data.status.device.budget, 7, "the cap carries over");
+
+  // Removing the computer on the dashboard removes its browsers too.
+  r = await call("DELETE", `/devices/${studio2Id}`, { token: s.web });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/check", { token: chrome2 });
+  assert.equal(r.status, 410);
 });

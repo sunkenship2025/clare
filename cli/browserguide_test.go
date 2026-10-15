@@ -174,7 +174,8 @@ func TestEnrollRunsTheBrowserGuideUnlessToldNotTo(t *testing.T) {
 	if !ta.extensionReady() {
 		t.Fatal("enroll must write the extension folder")
 	}
-	for _, want := range []string{"Now your browsers", "For each browser:", "Google Chrome", "brave://extensions", "https://w/enroll.html#k3F9"} {
+	// Browsers get a code of this computer's own, so they join it on the dashboard.
+	for _, want := range []string{"Now your browsers", "For each browser:", "Google Chrome", "brave://extensions", "https://w/enroll.html#brw123"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}

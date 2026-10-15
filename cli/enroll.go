@@ -196,7 +196,12 @@ func (a *App) runEnroll(args []string) int {
 	u.line("  To see usage any time, type:  %s", u.cyan("clare status"))
 
 	if !f.noBrowser {
-		a.runBrowserGuide(u, cfg, f.code)
+		// Browsers set up from here belong to this computer; the dashboard's code is the fallback.
+		code := f.code
+		if c, err := a.browserCode(cfg); err == nil {
+			code = c
+		}
+		a.runBrowserGuide(u, cfg, code)
 	} else if f.pause && a.GOOS == "windows" {
 		// install.ps1 runs the browser guide unelevated in the first window.
 		u.blank()

@@ -99,6 +99,7 @@ interface DeviceRow {
   enroll_code_hash: string | null;
   admin: boolean;
   budget_pct: number | null;
+  parent_id: string | null;
   problem: string | null;
   last_seen_at: Date | null;
   offline_alerted_at: Date | null;
@@ -242,14 +243,33 @@ async function week(ctx: Ctx): Promise<Attribution> {
   return ctx.attribution;
 }
 
+/**
+ * A computer and the browsers that belong to it count as one device: one cap, one total.
+ * A browser whose computer was removed stands on its own again.
+ */
+async function computerOf(ctx: Ctx, device: DeviceRow): Promise<{ root: DeviceRow; members: string[] }> {
+  let root = device;
+  if (device.parent_id) {
+    const [p] = await ctx.sql`select * from clare_devices where id = ${device.parent_id} and removed_at is null`;
+    if (p) root = toDevice(p);
+  }
+  const children = await ctx.sql<{ id: string }[]>`select id from clare_devices where parent_id = ${root.id}`;
+  return { root, members: [root.id, ...children.map((c) => c.id)] };
+}
+
 async function statusFor(ctx: Ctx, device: DeviceRow | null): Promise<Status> {
   const w = await week(ctx);
   const s = ctx.settings;
-  const metered = device && device.kind !== "web" ? device : null;
+  const metered = device && device.kind !== "web" ? await computerOf(ctx, device) : null;
   return evaluate({
     account: { used: w.used, budget: s.budget_pct, warn_pct: s.warn_pct, enforce: s.enforce, strict_hooks: s.strict_hooks },
     device: metered
-      ? { id: metered.id, label: deviceName(metered), used: w.devices.get(metered.id)?.points ?? 0, budget: metered.budget_pct }
+      ? {
+        id: metered.root.id,
+        label: deviceName(metered.root),
+        used: metered.members.reduce((sum, id) => sum + (w.devices.get(id)?.points ?? 0), 0),
+        budget: metered.root.budget_pct,
+      }
       : null,
     basis: w.basis,
     resets_at: w.week.end,
@@ -403,10 +423,11 @@ async function recover(ctx: Ctx, secret: string | undefined, b: Record<string, u
 
 async function findEnrollCode(ctx: Ctx, code: string) {
   const hash = await sha256(code.trim().toLowerCase());
-  const [row] = await ctx.sql<{ code_hash: string; admin: boolean; kind: "cli" | "extension" | null; expires_at: Date }[]>`
-    select code_hash, admin, kind, expires_at from clare_enroll_codes where code_hash = ${hash}`;
+  const [row] = await ctx.sql<
+    { code_hash: string; admin: boolean; kind: "cli" | "extension" | null; parent_id: string | null; expires_at: Date }[]
+  >`select code_hash, admin, kind, parent_id, expires_at from clare_enroll_codes where code_hash = ${hash}`;
   if (!row) throw fail(404, "invalid_code", "This link isn't valid. Make a new one in the clare dashboard (Add a device).");
-  return { hash, admin: row.admin, kind: row.kind, expired: new Date(row.expires_at) <= ctx.now };
+  return { hash, admin: row.admin, kind: row.kind, parent_id: row.parent_id, expired: new Date(row.expires_at) <= ctx.now };
 }
 
 async function enrollInfo(ctx: Ctx, code: string) {
@@ -447,17 +468,34 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
       : [];
     const cap = old.find((d) => d.budget_pct != null)?.budget_pct ?? null;
     const admin = c.admin || old.some((d) => d.admin);
+    // A browser added from a computer belongs to it (or keeps the computer it had).
+    let parent: string | null = null;
+    if (kind === "extension") {
+      for (const candidate of [c.parent_id, ...old.map((o) => o.parent_id)]) {
+        if (!candidate) continue;
+        const [p] = await tx`select id from clare_devices where id = ${candidate} and kind = 'cli' and removed_at is null`;
+        if (p) {
+          parent = candidate;
+          break;
+        }
+      }
+    }
     const [d] = await tx<{ id: string }[]>`
       insert into clare_devices (kind, label, info, machine_id, token_hash, bye_hash, enroll_code_hash, admin, budget_pct,
-                                 last_seen_at, created_at, alerts_seen_id)
+                                 parent_id, last_seen_at, created_at, alerts_seen_id)
       values (${kind}, ${label}, ${tx.json(info as postgres.JSONValue)}, ${machineId}, ${await sha256(token)},
-              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${ctx.now}, ${ctx.now},
+              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${parent}, ${ctx.now}, ${ctx.now},
               (select coalesce(max(id), 0) from clare_alerts))
       returning id`;
     if (old.length) {
       const ids = old.map((o) => o.id);
       await tx`update clare_usage set device_id = ${d.id} where device_id = any(${ids}::uuid[])`;
       await tx`update clare_meter_readings set device_id = ${d.id} where device_id = any(${ids}::uuid[])`;
+    }
+    if (kind === "cli" && machineId) {
+      // Reinstalled on the same computer: its browsers belong to it again.
+      await tx`update clare_devices set parent_id = ${d.id}
+               where parent_id in (select id from clare_devices where kind = 'cli' and machine_id = ${machineId} and id <> ${d.id})`;
     }
     return { id: d.id, replaced: old.length > 0 };
   });
@@ -620,8 +658,9 @@ async function enrollCode(ctx: Authed, b: Record<string, unknown>) {
   const code = randomCode(10);
   const expires = new Date(ctx.now.getTime() + (kind === "extension" ? BROWSER_CODE_TTL_MS : ENROLL_TTL_MS));
   await ctx.sql`delete from clare_enroll_codes where expires_at < ${new Date(ctx.now.getTime() - 30 * DAY_MS)}`;
-  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, created_at, expires_at)
-                values (${await sha256(code)}, ${admin}, ${kind}, ${ctx.now}, ${expires})`;
+  const parent = kind === "extension" && ctx.device.kind === "cli" ? ctx.device.id : null;
+  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, parent_id, created_at, expires_at)
+                values (${await sha256(code)}, ${admin}, ${kind}, ${parent}, ${ctx.now}, ${expires})`;
   return { code, admin, kind, expires_at: expires };
 }
 
@@ -695,6 +734,7 @@ async function me(ctx: Authed) {
         removed_at: d.removed_at,
         admin: d.admin,
         budget_pct: d.budget_pct,
+        parent_id: d.parent_id,
         usage: {
           points: w.devices.get(d.id)?.points ?? 0,
           credits: round4(mine.reduce((sum, u) => sum + u.credits, 0)),
@@ -728,7 +768,16 @@ async function patchDevice(ctx: Authed, id: string, b: Record<string, unknown>) 
   if (!label) throw fail(400, "bad_label", "A device name can't be empty.");
   const cap = b.budget_pct === undefined ? d.budget_pct : b.budget_pct === null ? null : points(b.budget_pct, "A device budget");
   const admin = typeof b.admin === "boolean" ? b.admin : d.admin;
-  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin} where id = ${d.id}`;
+  let parent = d.parent_id;
+  if (b.parent_id !== undefined) {
+    parent = b.parent_id === null ? null : str(b.parent_id, 40);
+    if (parent) {
+      const [p] = await ctx.sql`select id from clare_devices where id = ${parent} and kind = 'cli' and removed_at is null`;
+      if (d.kind !== "extension" || !p) throw fail(400, "bad_parent", "Only a browser can belong to a computer with Claude Code.");
+    }
+  }
+  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin}, parent_id = ${parent}
+                where id = ${d.id}`;
   return { ok: true };
 }
 
@@ -736,9 +785,12 @@ async function removeDevice(ctx: Authed, id: string) {
   requireAdmin(ctx);
   const [d] = await ctx.sql<{ id: string }[]>`select id from clare_devices where id = ${id}`;
   if (!d) throw fail(404, "not_found", "That device is gone.");
-  await ctx.sql`update clare_devices set removed_at = coalesce(removed_at, ${ctx.now}),
-                removed_reason = coalesce(removed_reason, 'removed from dashboard') where id = ${d.id}`;
-  await resolveDeviceAlerts(ctx, d.id);
+  // Removing a computer removes the browsers that belong to it.
+  const gone = await ctx.sql<{ id: string }[]>`
+    update clare_devices set removed_at = coalesce(removed_at, ${ctx.now}),
+           removed_reason = coalesce(removed_reason, 'removed from dashboard')
+    where id = ${d.id} or (parent_id = ${d.id} and removed_at is null) returning id`;
+  for (const g of gone) await resolveDeviceAlerts(ctx, g.id);
   return { ok: true };
 }
 

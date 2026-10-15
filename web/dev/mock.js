@@ -48,7 +48,7 @@ const db = {
     ? []
     : [
         { id: "d1", kind: "cli", label: "MacBook Pro", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
-        { id: "d2", kind: "extension", label: "Chrome on MacBook Pro", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
+        { id: "d2", kind: "extension", parent_id: "d1", label: "Chrome on MacBook Pro", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
         { id: "d3", kind: "cli", label: "Work ThinkPad", os: "Linux", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(30 * HOUR), budget_pct: 20, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
         { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
         { id: "d5", kind: "cli", label: "Old iMac", os: "macOS", browser: null, created_at: ago(40 * DAY), last_seen_at: ago(50 * HOUR), removed_at: ago(48 * HOUR), budget_pct: null, points: 0, credits: 0, by_model: {} },
@@ -204,6 +204,7 @@ function me() {
       removed_at: d.removed_at || null,
       admin: !!d.admin,
       budget_pct: d.budget_pct,
+      parent_id: d.parent_id || null,
       usage: { points: d.points, credits: d.credits, by_model: d.by_model },
     })),
     alerts: db.alerts.filter((x) => !x.resolved_at).map((x) => ({
@@ -271,6 +272,7 @@ export async function handle({ method, path, body, token }) {
     if (method === "PATCH") {
       if (typeof body?.label === "string" && body.label.trim()) d.label = body.label.trim().slice(0, 80);
       if (typeof body?.admin === "boolean") d.admin = body.admin;
+      if (body?.parent_id !== undefined) d.parent_id = body.parent_id;
       if (body?.budget_pct === null) d.budget_pct = null;
       else if (body?.budget_pct !== undefined) {
         const v = Number(body.budget_pct);
@@ -280,7 +282,7 @@ export async function handle({ method, path, body, token }) {
       return ok({ ok: true });
     }
     if (method === "DELETE") {
-      d.removed_at = d.removed_at || new Date().toISOString();
+      for (const x of db.devices) if (x === d || (x.parent_id === d.id && !x.removed_at)) x.removed_at = x.removed_at || new Date().toISOString();
       return ok({ ok: true });
     }
   }

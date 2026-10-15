@@ -114,6 +114,16 @@ const devices = () => data?.devices || [];
 const isAdmin = () => data?.me?.admin === true;
 const VIEW_ONLY_HELP = "Open the dashboard from an admin device, or run scripts/setup.sh login.";
 const byId = (id) => devices().find((d) => d.id === id);
+const isGone = (d) => !!d.removed_at || d.enforcement === "removed";
+/** A browser added from a computer belongs to it: one card, one cap. Otherwise a device is its own. */
+function rootOf(d) {
+  const p = d && d.parent_id ? byId(d.parent_id) : null;
+  return p && !isGone(p) ? p : d;
+}
+const childrenOf = (root) => devices().filter((d) => d.id !== root.id && rootOf(d).id === root.id);
+const roots = () => devices().filter((d) => rootOf(d).id === d.id);
+/** This week's points for a computer and its browsers together. */
+const groupPoints = (root) => [root, ...childrenOf(root)].reduce((sum, d) => sum + (d.usage?.points || 0), 0);
 const enrollUrl = (code) => `${webUrl}/enroll.html#${code}`;
 const isEstimate = () => account().basis === "estimate";
 const about = () => (isEstimate() ? "about " : "");
@@ -122,7 +132,9 @@ const about = () => (isEstimate() ? "about " : "");
 // they were enrolled; anything past 6 shares the neutral "other" color.
 const SLOTS = 6;
 function colorFor(id) {
-  const order = [...devices()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const d = byId(id);
+  if (d) id = rootOf(d).id;
+  const order = [...roots()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   const i = order.findIndex((d) => d.id === id);
   return i >= 0 && i < SLOTS ? `var(--p${i + 1})` : "var(--other)";
 }
@@ -135,7 +147,10 @@ function deviceLabel(d) {
 
 function deviceSub(d) {
   const os = osName(d.os);
-  const parts = [d.kind === "cli" ? "Claude Code" : `${browserName(d.browser) || "Browser"} extension`];
+  const kids = childrenOf(d).filter((k) => !isGone(k));
+  const parts = [d.kind === "cli"
+    ? ["Claude Code", ...kids.map((k) => browserName(k.browser) || "Browser")].join(" + ")
+    : `${browserName(d.browser) || "Browser"} extension`];
   if (os && !deviceLabel(d).includes(os)) parts.push(os);
   if (d.created_at) parts.push(`added ${relTime(d.created_at)}`);
   if (d.admin) parts.push("admin");
@@ -241,10 +256,10 @@ function limitSegments(acc) {
   if ((acc.before_clare || 0) > 0.05) {
     segs.push({ key: "before", name: "Before clare", value: acc.before_clare, color: "var(--before)", note: "Already used this week before clare was set up." });
   }
-  const order = [...devices()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const order = [...roots()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
   let other = 0;
   order.forEach((d, i) => {
-    const v = d.usage?.points || 0;
+    const v = groupPoints(d);
     if (!(v > 0.05)) return;
     if (i >= SLOTS) {
       other += v;
@@ -380,7 +395,7 @@ function devicesSectionHtml() {
   const active = list.filter((d) => !d.removed_at && d.enforcement !== "removed");
   const unverified = active.filter((d) => d.enforcement === "unverified");
   const order = (d) => (d.removed_at ? 2 : d.enforcement === "unverified" ? 1 : 0);
-  const sorted = [...list].sort((a, b) => order(a) - order(b) || new Date(a.created_at) - new Date(b.created_at));
+  const sorted = roots().sort((a, b) => order(a) - order(b) || new Date(a.created_at) - new Date(b.created_at));
   const count = active.length === 1 ? "1 connected" : `${active.length} connected`;
   return `
     <section class="devices-sec" aria-labelledby="devices-title">
@@ -395,16 +410,44 @@ function devicesSectionHtml() {
     </section>`;
 }
 
+function partRowHtml(d) {
+  const c = connectivityLine(d);
+  const name = d.kind === "cli" ? "Claude Code" : `${browserName(d.browser) || "Browser"}`;
+  return `
+    <li class="dpart">
+      <span class="dpart-icon" aria-hidden="true">${icon(d.kind === "cli" ? "terminal" : "browser", 16)}</span>
+      <span class="dpart-name">${esc(name)}</span>
+      <span class="dpart-status small" data-tone="${c.tone}"><span class="dot dot-${c.dot}" aria-hidden="true"></span>${esc(c.text)}</span>
+      <span class="dpart-pts num">${isEstimate() ? "~" : ""}${pts(d.usage?.points || 0)}</span>
+      ${d.kind !== "cli" && !isGone(d) && isAdmin()
+        ? `<span class="dpart-actions">
+            <button class="btn btn-sm btn-ghost" data-action="edit" data-id="${esc(d.id)}" aria-label="Edit ${esc(deviceLabel(d))}">${icon("edit", 14)}</button>
+            <button class="btn btn-sm btn-ghost btn-danger" data-action="remove" data-id="${esc(d.id)}" aria-label="Remove ${esc(deviceLabel(d))}">${icon("trash", 14)}</button>
+          </span>`
+        : ""}
+    </li>`;
+}
+
 function deviceCardHtml(d) {
   const removed = !!d.removed_at || d.enforcement === "removed";
+  const kids = childrenOf(d);
+  const members = [d, ...kids];
+  // The card's health is its weakest part.
+  const worst = members.find((m) => !isGone(m) && m.enforcement === "unverified") || d;
   const c = connectivityLine(d);
-  const u = d.usage || {};
+  const u = { ...(d.usage || {}), points: groupPoints(d) };
+  if (kids.length) {
+    const byModel = {};
+    for (const m of members) for (const [k, v] of Object.entries(m.usage?.by_model || {})) byModel[k] = (byModel[k] || 0) + v;
+    u.by_model = byModel;
+  }
   const cap = d.budget_pct;
   const capPct = cap > 0 ? ((u.points || 0) / cap) * 100 : null;
   const capState = capPct === null ? "ok" : capPct >= 100 ? "blocked" : capPct >= (account().warn_pct ?? 80) ? "warn" : "ok";
   const split = modelSplit(u.by_model);
-  const why = unverifiedWhy(d);
-  const editing = ui.editing === d.id;
+  const why = unverifiedWhy(worst);
+  const editingId = members.some((m) => m.id === ui.editing) ? ui.editing : null;
+  const editing = editingId === d.id;
   return `
     <li class="dcard ${removed ? "is-removed" : ""}" data-id="${esc(d.id)}" style="--c:${colorFor(d.id)}">
       <div class="dcard-top">
@@ -413,7 +456,7 @@ function deviceCardHtml(d) {
           <h3>${esc(deviceLabel(d))}</h3>
           <p class="dcard-sub">${esc(deviceSub(d))}</p>
         </div>
-        ${enforcementChip(d)}
+        ${enforcementChip(worst)}
       </div>
       <p class="dcard-status" data-tone="${c.tone}"><span class="dot dot-${c.dot}" aria-hidden="true"></span>${esc(c.text)}</p>
       ${why ? `<p class="dcard-why">${why}</p>` : ""}
@@ -428,13 +471,14 @@ function deviceCardHtml(d) {
           : ""}
         ${split ? `<p class="usage-split muted small">${esc(split)}</p>` : ""}
       </div>
+      ${kids.length ? `<ul class="dparts" aria-label="Parts of ${esc(deviceLabel(d))}">${members.map(partRowHtml).join("")}</ul>` : ""}
       ${removed || !isAdmin()
         ? ""
         : `<div class="dcard-actions">
             <button class="btn btn-sm" data-action="edit" data-id="${esc(d.id)}" aria-expanded="${editing}">${icon("edit", 16)}<span>Edit</span></button>
             <button class="btn btn-sm btn-ghost btn-danger" data-action="remove" data-id="${esc(d.id)}">${icon("trash", 16)}<span>Remove</span></button>
           </div>`}
-      ${editing && !removed && isAdmin() ? editorHtml(d) : ""}
+      ${editingId && !removed && isAdmin() ? editorHtml(byId(editingId)) : ""}
     </li>`;
 }
 
@@ -455,13 +499,25 @@ function emptyDevicesHtml() {
 function editorHtml(d) {
   const has = d.budget_pct > 0;
   const value = has ? Math.max(1, Math.round(d.budget_pct)) : 25;
+  const computers = d.kind === "extension" ? roots().filter((r) => r.kind === "cli" && !isGone(r)) : [];
+  const parent = rootOf(d) !== d ? rootOf(d) : null;
   return `
     <form class="editor" data-editor="${esc(d.id)}">
       <div class="field">
         <label class="field-label" for="label-${esc(d.id)}">Name</label>
         <input class="input" id="label-${esc(d.id)}" name="label" maxlength="80" value="${esc(d.label || "")}" placeholder="${esc(deviceLabel(d))}">
       </div>
-      <label class="check-row">
+      ${computers.length
+        ? `<div class="field">
+            <label class="field-label" for="parent-${esc(d.id)}">Computer</label>
+            <select class="input" id="parent-${esc(d.id)}" name="parent">
+              <option value="">None: its own device, with its own cap</option>
+              ${computers.map((r) => `<option value="${esc(r.id)}" ${parent && parent.id === r.id ? "selected" : ""}>${esc(deviceLabel(r))}</option>`).join("")}
+            </select>
+            <span class="muted small">A browser on a computer shares that computer's card and cap.</span>
+          </div>`
+        : ""}
+      <label class="check-row" data-cap-check ${parent ? "hidden" : ""}>
         <input type="checkbox" name="capped" ${has ? "checked" : ""}>
         <span><strong>Cap this device</strong><br>
         <span class="muted small">Limits how much of the weekly limit this device may use, whatever the account total is. Useful to keep headroom for another machine.</span></span>
@@ -495,13 +551,21 @@ function wireEditor(id) {
   const range = form.elements.cap;
   const capped = form.elements.capped;
   const row = $(".cap-row", form);
+  const parentSel = form.elements.parent;
+  const capCheck = $("[data-cap-check]", form);
+  const syncParent = () => {
+    const linked = !!(parentSel && parentSel.value);
+    capCheck.hidden = linked;
+    row.hidden = linked || !capped.checked;
+  };
+  parentSel?.addEventListener("change", syncParent);
   const out = $(`#cap-out-${CSS.escape(id)}`);
   const preview = $(`#cap-preview-${CSS.escape(id)}`);
   const update = () => {
     const v = Number(range.value);
     out.textContent = `${v}%`;
     range.style.setProperty("--fill", `${((v - 1) / 99) * 100}%`);
-    const used = d.usage?.points || 0;
+    const used = rootOf(d) === d ? groupPoints(d) : d.usage?.points || 0;
     preview.innerHTML = `This device can use up to <strong>${v}%</strong> of the weekly limit. It has used ${pts(used)} so far this week${used >= v ? `, so it would be <strong>${account().enforce === false ? "over its cap" : "blocked"}</strong> until the week resets` : ""}.`;
   };
   range.addEventListener("input", update);
@@ -510,16 +574,19 @@ function wireEditor(id) {
     if (capped.checked) range.focus();
   });
   update();
+  syncParent();
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = form.querySelector('[type="submit"]');
     const errBox = $("[data-error]", form);
     errBox.hidden = true;
+    const linked = !!(parentSel && parentSel.value);
     const body = {
       label: form.elements.label.value.trim() || undefined,
-      budget_pct: capped.checked ? Number(range.value) : null,
+      budget_pct: capped.checked && !linked ? Number(range.value) : null,
       admin: form.elements.admin.checked,
     };
+    if (parentSel) body.parent_id = parentSel.value || null;
     setBusy(btn, true, "Saving…");
     try {
       await api(`/devices/${encodeURIComponent(id)}`, { method: "PATCH", body });
@@ -574,13 +641,19 @@ function colPath(x, y, w, h, r) {
 }
 
 function dailyHtml() {
-  const rows = data.daily || [];
+  let rows = data.daily || [];
   if (!rows.length) return "";
   const ppc = pointsPerCredit();
   const toVal = (credits) => (ppc ? credits * ppc : credits);
   const fmt = (v) => (ppc ? pts(v) : `${credits(v)} credits`);
   const days = last14();
-  const order = [...devices()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  const order = [...roots()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  // A browser's days count toward its computer.
+  const rootIdOf = (id) => {
+    const d = byId(id);
+    return d ? rootOf(d).id : id;
+  };
+  rows = rows.map((r) => ({ ...r, device_id: rootIdOf(r.device_id) }));
   const seen = new Set(rows.map((r) => r.device_id));
   const series = order.filter((d) => seen.has(d.id));
   // Rows for devices no longer listed (removed long ago) still count, as "Other devices".
@@ -878,8 +951,9 @@ const removeDialog = $("#remove-dialog");
 function openRemoveDialog(d) {
   if (!d) return;
   const name = deviceLabel(d);
+  const kids = d.kind === "cli" ? childrenOf(d).filter((k) => !isGone(k)) : [];
   const what = d.kind === "cli"
-    ? "Next time it checks in, clare uninstalls itself from that computer and Claude Code there is no longer tracked or limited."
+    ? `Next time it checks in, clare uninstalls itself from that computer and Claude Code there is no longer tracked or limited.${kids.length ? ` Its browser extension${kids.length > 1 ? "s" : ""} (${kids.map((k) => esc(browserName(k.browser) || deviceLabel(k))).join(", ")}) ${kids.length > 1 ? "are" : "is"} removed too.` : ""}`
     : "Next time that browser checks in, the extension disconnects and claude.ai there is no longer tracked or limited.";
   removeDialog.innerHTML = `
     <div class="sheet-head">

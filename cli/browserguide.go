@@ -188,6 +188,19 @@ func (a *App) printAllBrowserSteps(u *ui, found []foundBrowser, dir, link string
 	u.line("    %s", link)
 }
 
+// browserCode asks for a one-hour code that can only add a browser. The browser joins this
+// computer (one cap, one card on the dashboard) and gets its admin rights.
+func (a *App) browserCode(cfg *Config) (string, error) {
+	var resp struct {
+		Code string `json:"code"`
+	}
+	err := a.client(cfg.API, cfg.Token).call(10*time.Second, "POST", "/enroll-code", map[string]any{"kind": "extension", "admin": true}, &resp)
+	if err == nil && resp.Code == "" {
+		err = fmt.Errorf("no code in the reply")
+	}
+	return resp.Code, err
+}
+
 // runBrowser is `clare browser`: the browser guide on its own, for a browser added later.
 func (a *App) runBrowser() int {
 	u := newUI(a.Out)
@@ -219,12 +232,8 @@ func (a *App) runBrowser() int {
 		u.blank()
 		return 0
 	}
-	// A one-hour code that can only add a browser; the browser gets this computer's admin rights.
-	var resp struct {
-		Code string `json:"code"`
-	}
-	err = a.client(cfg.API, cfg.Token).call(10*time.Second, "POST", "/enroll-code", map[string]any{"kind": "extension", "admin": true}, &resp)
-	if err != nil || resp.Code == "" {
+	code, err := a.browserCode(cfg)
+	if err != nil {
 		switch {
 		case isOffline(err):
 			u.fail("clare can't reach its server right now. Check your internet connection and try again.")
@@ -236,7 +245,7 @@ func (a *App) runBrowser() int {
 		u.blank()
 		return 1
 	}
-	a.runBrowserGuide(u, cfg, resp.Code)
+	a.runBrowserGuide(u, cfg, code)
 	u.blank()
 	return 0
 }

@@ -134,6 +134,18 @@
 .dcard-why { font-size: 0.9rem; padding: 0.65rem 0.8rem; border-radius: 10px; background: var(--warn-soft); }
 
 .dcard-usage { display: grid; gap: 0.45rem; }
+
+/* A computer's parts: Claude Code and the browsers that belong to it. */
+.dparts { list-style: none; margin: 0; padding: 0.35rem 0 0; display: grid; gap: 0.15rem; border-top: 1px solid var(--line); }
+.dpart { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 0.2rem 0.6rem; padding: 0.3rem 0; }
+.dpart-icon { color: var(--muted); display: inline-flex; }
+.dpart-name { font-weight: 600; font-size: 0.925rem; }
+.dpart-pts { font-weight: 600; font-size: 0.925rem; }
+.dpart-status { grid-column: 2 / 3; grid-row: 2; display: flex; align-items: center; gap: 0.4rem; color: var(--muted); }
+.dpart-status[data-tone="ok"] { color: var(--ok-ink); }
+.dpart-status[data-tone="warn"] { color: var(--warn-ink); }
+.dpart-actions { display: inline-flex; gap: 0.15rem; }
+.dpart .btn-sm { padding: 0.25rem 0.4rem; }
 .usage-line { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
 .dcard .meter { --meter-color: var(--c); }
 .dcard .meter[data-state="warn"] { --meter-color: var(--warn); }
