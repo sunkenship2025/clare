@@ -79,7 +79,8 @@ if [ -z "${PROJECT_REF:-}" ]; then
     ORG=$($SB orgs list -o json | json 'j=>(j[0]||{}).id')
   fi
   [ -n "$ORG" ] || { echo "Create a free Supabase organization at https://supabase.com/dashboard first, then re-run."; exit 1; }
-  REGION=$(ask "Server region near you? [ap-south-1 = Mumbai] (us-east-1, eu-west-1, …)" ap-south-1)
+  REGION=$(ask "Server region near you? Press Enter for Mumbai (ap-south-1), or type one like us-east-1, eu-west-1:" ap-south-1)
+  REGION=$(printf '%s' "$REGION" | awk '{print $1}')
   DB_PASSWORD=$(openssl rand -hex 20)
   save DB_PASSWORD "$DB_PASSWORD"
   $SB projects create clare --org-id "$ORG" --db-password "$DB_PASSWORD" --region "$REGION"
