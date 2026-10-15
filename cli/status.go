@@ -102,6 +102,9 @@ func (a *App) runStatus() int {
 	} else {
 		u.line(row, "Budget", u.yellow("monitor only (nothing is blocked)"))
 	}
+	if len(cfg.Profiles) > 0 {
+		u.line(row, "Profiles", strings.Join(cfg.Profiles, ", ")+" only")
+	}
 	if online {
 		u.line(row, "Connection", u.green("✓ Connected"))
 	} else {

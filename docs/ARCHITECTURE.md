@@ -65,10 +65,17 @@ Source files use placeholders replaced by `scripts/build.mjs` (and by the dev se
 - **Account**: one row (`clare_settings`). Owner name, account name, plan, weekly **budget**, warn level,
   `enforce` (block vs. monitor only), `strict_hooks`, the latest official meter reading.
 - **Devices**: `cli` (Claude Code on a computer), `extension` (a Chrome profile), `web` (a signed-in dashboard
-  session, never listed or metered). Every device token belongs to the owner and can do everything the
-  dashboard can.
+  session, never listed or metered). All belong to the owner.
+- **Admin devices**: only devices with `admin` on can change things: settings, budget, caps, adding (minting
+  enroll codes) and removing devices, dismissing alerts. Everything else gets `403 admin_only`. Other devices
+  report usage, check the budget, remove themselves (`clare uninstall`) and open a **view-only** dashboard.
+  A dashboard session copies the flag from what signed it in: `scripts/setup.sh` / `/recover` → admin;
+  `/login-link` → the calling device's flag. New devices are admin only when their enroll code was minted with
+  `admin: true`; re-enrolling a machine keeps its flag. The setup secret always gets you an admin dashboard, so
+  you can't lock yourself out.
 - **Enrollment codes**: short codes the dashboard mints to add a device. Valid **7 days**, any number of devices,
-  stored hashed.
+  stored hashed, with an `admin` flag. A code can be limited to one `kind`: any device (even a non-admin one)
+  may mint a one-hour, browser-only code for itself (`clare browser`); its admin flag can't exceed the caller's.
 - **Usage events**: one per Claude reply, tokens by model (exact from Claude Code transcripts, estimated from text
   on claude.ai). Idempotent on `key` across the whole account.
 - **Meter readings**: the official weekly (and 5-hour) usage %, as seen by any device.
@@ -227,9 +234,9 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
 |---|---|---|
 | `GET /health` | – | `{ ok: true, needs_setup, version }` |
 | `POST /setup` | `{ secret, owner_name, account_name, plan }` | `{ login_code }` — only once; `secret` must equal env `CLARE_SETUP_SECRET`. |
-| `GET /enroll/:code` | – | `{ account_name, owner_name, expired, devices: [{ kind, label, created_at, last_seen_at }] }` — devices enrolled with this code; the enroll page polls it. `404 invalid_code`. |
+| `GET /enroll/:code` | – | `{ account_name, owner_name, admin, kind, expired, devices: [{ kind, label, created_at, last_seen_at }] }` — devices enrolled with this code; the enroll page polls it. `404 invalid_code`. |
 | `POST /enroll` | `{ code, kind: "cli"\|"extension", label, info }` | `{ token, device_id, bye_secret, status }`. Re-enrolling the same machine (`info.machine_id`, same kind) replaces the old device and moves its history over. `410 expired_code`. |
-| `POST /login` | `{ code }` | `{ token }` — one-time login code (10 min) → `web` device token. |
+| `POST /login` | `{ code }` | `{ token, admin }` — one-time login code (10 min) → `web` device token with the code's admin flag. |
 | `POST /bye` | `{ device_id, secret }` | `{ ok }` — extension uninstall ping from `bye.html`. |
 | `POST /recover` | `{ secret }` | `{ login_code }` — lost dashboard link; needs the setup secret (`.clare-secret`). |
 
@@ -242,18 +249,19 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
 | `POST /meter` | `<reading>` | `{ ok, stored }` |
 | `POST /heartbeat` | `{ info: {...}, health: { ok, problems: [string] } }` | `{ status, settings: { enforce, strict_hooks }, alerts: [{ id, kind, message, created_at }] }` |
 | `POST /device/remove` | `{ reason }` | `{ ok }` — the device removes itself (`clare uninstall`). |
-| `POST /login-link` | `{}` | `{ code, expires_at }` → open `webUrl/dash.html#login=<code>` |
-| `POST /enroll-code` | `{}` | `{ code, expires_at }` → `webUrl/enroll.html#<code>` |
+| `POST /login-link` | `{}` | `{ code, expires_at }` → open `webUrl/dash.html#login=<code>` (admin only if the caller is) |
+| `POST /enroll-code` | `{ admin?: boolean, kind?: "cli" \| "extension" }` | `{ code, admin, kind, expires_at }` → `webUrl/enroll.html#<code>` · **admin**, except `kind: "extension"` (1 h, admin only if the caller is). `POST /enroll` with the wrong kind → `403 wrong_kind`. |
 | `GET /me` | – | dashboard payload (below) |
-| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null }` | `{ ok }` |
-| `DELETE /devices/:id` | – | `{ ok }` — revoke; the device gets `410` next time. |
-| `POST /alerts/:id/resolve` | – | `{ ok }` |
-| `PATCH /settings` | `{ account_name?, owner_name?, plan?, capacity_manual?, budget_pct?, warn_pct?, enforce?, strict_hooks? }` | `{ ok }` |
+| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null, admin?: boolean }` | `{ ok }` · **admin** |
+| `DELETE /devices/:id` | – | `{ ok }` — revoke; the device gets `410` next time. · **admin** |
+| `POST /alerts/:id/resolve` | – | `{ ok }` · **admin** |
+| `PATCH /settings` | `{ account_name?, owner_name?, plan?, capacity_manual?, budget_pct?, warn_pct?, enforce?, strict_hooks? }` | `{ ok }` · **admin** |
 
 ### `GET /me`
 
 ```jsonc
 {
+  "me": { "device_id": "…", "kind": "web", "admin": true },   // the caller; admin = can change things
   "account": {
     "name": "My Claude", "owner_name": "Pranav", "plan": "max5",
     "budget_pct": 90, "warn_pct": 80, "enforce": true, "strict_hooks": false,
@@ -273,7 +281,7 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
     { "id": "…", "kind": "cli", "label": "MacBook Air", "os": "macOS", "browser": null,
       "connectivity": "online", "enforcement": "active", "problem": null,
       "last_seen_at": "…", "created_at": "…", "removed_at": null,
-      "budget_pct": 30,
+      "admin": true, "budget_pct": 30,
       "usage": { "points": 12.3, "credits": 18.2, "by_model": { "opus": 15.1, "sonnet": 3.1 } } }
   ],
   "alerts": [ { "id": 1, "kind": "device_offline", "message": "…", "created_at": "…", "device_id": "…", "device_label": "…" } ],
@@ -294,6 +302,8 @@ Files (system dir = `/Library/Application Support/ClaudeCode` | `/etc/claude-cod
   `allowManagedHooksOnly` only when `strict_hooks` is on (off by default: blocking works without it, and it turns
   off your own hooks and plugins)
 - `<sys>/clare/.backup/` (root 700): copies + sha256 for the watchdog
+- `<sys>/clare/extension/` (root-owned, readable): the browser extension, bundled into the binary by
+  `scripts/build.mjs` (`cli/ext`, `go:embed`), for "Load unpacked"; `extension.sum` records which version is there
 - per-user state: `~/Library/Caches/clare` | `~/.cache/clare` | `%LOCALAPPDATA%\clare` — transcript offsets,
   cached status, latest meter reading
 
@@ -316,14 +326,30 @@ usage → count once. Subagents: `<transcript dir>/<session_id>/subagents/*.json
 `clare · 46% of weekly budget`. No network, ≤ 1 s for clare's own work, never fails.
 
 Watchdog (`clare watchdog`, root, every 5 min via launchd / systemd timer / scheduled task): verify drop-in +
-binary against backup (restore + report problems), `/heartbeat`, apply `strict_hooks` changes, self-uninstall on
-`410 revoked`.
+binary against backup (restore + report problems), refresh the extension folder when the binary carries a newer
+one (browsers load unpacked extensions from disk at startup, so they update on their next restart), `/heartbeat`,
+apply `strict_hooks` changes, self-uninstall on `410 revoked`.
 
-Commands: `enroll`, `status`, `dashboard` (opens dash via `/login-link`), `doctor`, `uninstall`, `version`, `hook`,
-`statusline`, `watchdog`.
+**Profiles** — managed settings reach every Claude Code profile on a computer (each `CLAUDE_CONFIG_DIR`, e.g.
+clauth's `~/.clauth/profiles/<name>/runtime-*`), which may be signed in to other Claude accounts. A computer can be
+limited to some: `sudo clare enroll <code> --profile pranav` or `sudo clare profile pranav` (`--all` undoes it),
+stored as `profiles` in the config. A name matches `…/profiles/<name>/…` or a config dir named that; a path matches
+that dir and below; `default` is `~/.claude`. In other profiles hooks exit silently (no report, no block) and the
+status line shows only your own line and never saves that profile's meter reading.
 
-`enroll` finishes by offering the browser step: if a Chromium browser is installed, open `webUrl/enroll.html#<code>`
-(which offers the extension) unless `--no-browser`.
+Commands: `enroll`, `browser`, `profile`, `status`, `dashboard` (opens dash via `/login-link`), `doctor`, `uninstall`,
+`version`, `hook`, `statusline`, `watchdog`.
+
+**Browser guide** — `enroll` ends with it (unless `--no-browser`), and `clare browser` runs it alone with a fresh
+browser-only code. It finds the Chromium browsers installed (Chrome, Edge, Brave, Arc, Vivaldi, Opera, Chromium) and
+goes through them one at a time: open that browser's extensions page (`chrome://extensions`, `edge://extensions`,
+`brave://extensions`, …), say where its Developer mode switch is, show the extension folder in Finder / Explorer and
+copy its path, wait for Enter (`s` skips a browser, `q` stops), then open `webUrl/enroll.html#<code>` in that
+browser so the extension enrolls itself, and poll `GET /enroll/:code` until a new extension device appears (90 s;
+otherwise it prints the code to paste into the popup). Answers are read from the terminal (`/dev/tty`), so it works
+under `curl … | sh`; with no terminal it prints every browser's steps at once. Under sudo, browsers and Finder open
+as the signed-in user; an elevated Windows session never starts a browser and prints the steps instead. A build
+without the bundled extension points at the enroll page's download instead.
 
 ## Extension (`extension/`, Chrome MV3, no build step)
 
@@ -345,8 +371,9 @@ Commands: `enroll`, `status`, `dashboard` (opens dash via `/login-link`), `docto
   with Copy; "Add to Chrome" (Web Store when `extensionUrl` is set, else the zip with load-unpacked steps); live ticks
   as devices enroll.
 - `dash.html` — overview (official meter, budget bar, basis, reset time, 5-hour window, unobserved and before-clare
-  points), devices (connectivity, enforcement, usage, cap, rename, remove), "Add a device" (mints an enroll link),
-  alerts, last-14-days chart by device, settings (names, plan, budget, warn level, enforce, strict hooks, capacity).
+  points), devices (connectivity, enforcement, usage, cap, admin, rename, remove), "Add a device" (mints an enroll
+  link, optionally for admin devices), alerts, last-14-days chart by device, settings (names, plan, budget, warn
+  level, enforce, strict hooks, capacity). Non-admin sessions see the same data, view-only.
 - `bye.html#d=…&s=…` — "clare was removed from this browser" + pings `/bye`.
 - `index.html` — what clare is, link to the dashboard.
 

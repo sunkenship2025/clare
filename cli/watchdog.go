@@ -22,6 +22,8 @@ func (a *App) runWatchdog() int {
 	}
 
 	problems := a.checkIntegrity(cfg, true)
+	// After an upgrade, refresh the extension folder; browsers load it on their next start.
+	_, _ = a.writeExtension()
 
 	var resp heartbeatResponse
 	err = a.client(cfg.API, cfg.Token).call(15*time.Second, "POST", "/heartbeat", heartbeatRequest{

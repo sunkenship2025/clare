@@ -24,6 +24,7 @@ function nextMonday930() {
 
 const RESETS = nextMonday930();
 const ESTIMATE = params.has("estimate");
+const VIEW_ONLY = params.has("viewonly");
 
 const db = {
   account: {
@@ -46,7 +47,7 @@ const db = {
   devices: params.has("empty")
     ? []
     : [
-        { id: "d1", kind: "cli", label: "MacBook Pro", os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
+        { id: "d1", kind: "cli", label: "MacBook Pro", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
         { id: "d2", kind: "extension", label: "Chrome on MacBook Pro", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
         { id: "d3", kind: "cli", label: "Work ThinkPad", os: "Linux", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(30 * HOUR), budget_pct: 20, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
         { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
@@ -168,6 +169,8 @@ function me() {
   const a = db.account;
   const totals = accountUsed();
   return {
+    // ?viewonly in the page URL previews a non-admin dashboard.
+    me: { device_id: "web", kind: "web", admin: !VIEW_ONLY },
     account: {
       name: a.name,
       owner_name: a.owner_name,
@@ -199,6 +202,7 @@ function me() {
       last_seen_at: d.last_seen_at,
       created_at: d.created_at,
       removed_at: d.removed_at || null,
+      admin: !!d.admin,
       budget_pct: d.budget_pct,
       usage: { points: d.points, credits: d.credits, by_model: d.by_model },
     })),
@@ -258,7 +262,7 @@ export async function handle({ method, path, body, token }) {
     const code = `mock${(++db.seq).toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const expires_at = later(7 * DAY);
     db.codes.set(code, { mode: "progressive", started: null, devices: [], expires_at });
-    return ok({ code, expires_at });
+    return ok({ code, admin: body?.admin === true, expires_at });
   }
 
   if (parts[0] === "devices" && parts[1]) {
@@ -266,6 +270,7 @@ export async function handle({ method, path, body, token }) {
     if (!d) return err(404, "not_found", "That device is gone.");
     if (method === "PATCH") {
       if (typeof body?.label === "string" && body.label.trim()) d.label = body.label.trim().slice(0, 80);
+      if (typeof body?.admin === "boolean") d.admin = body.admin;
       if (body?.budget_pct === null) d.budget_pct = null;
       else if (body?.budget_pct !== undefined) {
         const v = Number(body.budget_pct);

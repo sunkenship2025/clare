@@ -110,6 +110,9 @@ app.addEventListener("focusout", () => {
 
 const account = () => data?.account || {};
 const devices = () => data?.devices || [];
+/** Admin sessions can change settings, caps and devices; others get a view-only dashboard. */
+const isAdmin = () => data?.me?.admin === true;
+const VIEW_ONLY_HELP = "Open the dashboard from an admin device, or run scripts/setup.sh login.";
 const byId = (id) => devices().find((d) => d.id === id);
 const enrollUrl = (code) => `${webUrl}/enroll.html#${code}`;
 const isEstimate = () => account().basis === "estimate";
@@ -135,6 +138,7 @@ function deviceSub(d) {
   const parts = [d.kind === "cli" ? "Claude Code" : `${browserName(d.browser) || "Browser"} extension`];
   if (os && !deviceLabel(d).includes(os)) parts.push(os);
   if (d.created_at) parts.push(`added ${relTime(d.created_at)}`);
+  if (d.admin) parts.push("admin");
   return parts.join(" · ");
 }
 
@@ -203,6 +207,7 @@ function render() {
   renderTopbar();
 
   app.innerHTML = `
+    ${isAdmin() ? "" : `<div class="notice view-only-note">${icon("lock", 18)}<p><strong>View only.</strong> This dashboard was opened from a device that isn't an admin, so it can't change settings or devices. ${VIEW_ONLY_HELP}</p></div>`}
     ${overviewHtml()}
     ${alertsHtml(data.alerts || [])}
     ${devicesSectionHtml()}
@@ -220,6 +225,10 @@ function render() {
 }
 
 function renderTopbar() {
+  if (!isAdmin()) {
+    topActions.innerHTML = `<span class="chip chip-neutral" title="${esc(VIEW_ONLY_HELP)}">View only</span>`;
+    return;
+  }
   topActions.innerHTML = `
     <button class="btn icon-btn btn-ghost" data-action="settings" aria-label="Settings" title="Settings">${icon("settings", 20)}</button>
     <button class="btn btn-primary" data-action="add-device">${icon("plus", 18)}<span>Add a device</span></button>`;
@@ -327,7 +336,7 @@ function overviewHtml() {
         <div class="budget-line small">
           <p><strong>${esc(budget >= 100 ? "Budget: the full weekly limit" : `Budget: ${pts(budget)} of the weekly limit`)}</strong>, warning at ${pct(acc.warn_pct ?? 80)} of it.
             <span class="muted">${enforceLine}</span></p>
-          <button class="btn btn-sm link-btn" data-action="settings">${icon("settings", 16)}<span>Change</span></button>
+          ${isAdmin() ? `<button class="btn btn-sm link-btn" data-action="settings">${icon("settings", 16)}<span>Change</span></button>` : ""}
         </div>
         ${notes.length ? `<ul class="viz-notes muted small">${notes.map((n) => `<li>${n}</li>`).join("")}</ul>` : ""}
       </figure>
@@ -356,7 +365,7 @@ function alertsHtml(alerts) {
             return `<li class="alert-item alert-${m.tone}" data-alert="${esc(a.id)}">
               <span class="alert-icon">${icon(m.icon, 18)}</span>
               <p>${esc(a.message)} <span class="muted">${esc(relTime(a.created_at))}</span></p>
-              <button class="btn btn-ghost btn-sm" data-action="dismiss" data-id="${esc(a.id)}">Dismiss</button>
+              ${isAdmin() ? `<button class="btn btn-ghost btn-sm" data-action="dismiss" data-id="${esc(a.id)}">Dismiss</button>` : ""}
             </li>`;
           })
           .join("")}
@@ -419,13 +428,13 @@ function deviceCardHtml(d) {
           : ""}
         ${split ? `<p class="usage-split muted small">${esc(split)}</p>` : ""}
       </div>
-      ${removed
+      ${removed || !isAdmin()
         ? ""
         : `<div class="dcard-actions">
-            <button class="btn btn-sm" data-action="edit" data-id="${esc(d.id)}" aria-expanded="${editing}">${icon("edit", 16)}<span>${cap > 0 ? "Rename or change cap" : "Rename or set a cap"}</span></button>
+            <button class="btn btn-sm" data-action="edit" data-id="${esc(d.id)}" aria-expanded="${editing}">${icon("edit", 16)}<span>Edit</span></button>
             <button class="btn btn-sm btn-ghost btn-danger" data-action="remove" data-id="${esc(d.id)}">${icon("trash", 16)}<span>Remove</span></button>
           </div>`}
-      ${editing && !removed ? editorHtml(d) : ""}
+      ${editing && !removed && isAdmin() ? editorHtml(d) : ""}
     </li>`;
 }
 
@@ -435,7 +444,7 @@ function emptyDevicesHtml() {
       <span class="connect-self-icon">${icon("laptop", 22)}</span>
       <h3>No devices yet</h3>
       <p class="muted">Add each computer where you use Claude Code, and each browser where you use claude.ai. Until then clare can only show Claude's meter, not where the usage came from, and nothing is enforced.</p>
-      <div class="empty-actions">
+      <div class="empty-actions" ${isAdmin() ? "" : "hidden"}>
         <button class="btn btn-primary" data-action="add-device">${icon("plus", 18)}<span>Add a device</span></button>
       </div>
     </div>`;
@@ -466,6 +475,11 @@ function editorHtml(d) {
         <div class="range-scale muted small"><span>1%</span><span>100%</span></div>
         <p class="editor-preview" id="cap-preview-${esc(d.id)}"></p>
       </div>
+      <label class="check-row">
+        <input type="checkbox" name="admin" ${d.admin ? "checked" : ""}>
+        <span><strong>Admin device</strong><br>
+        <span class="muted small">Can change the budget, caps and settings, and add or remove devices, from the command line or the dashboard. Other devices only report usage and get a view-only dashboard.</span></span>
+      </label>
       <p class="field-error" data-error hidden></p>
       <div class="editor-foot">
         <button type="button" class="btn btn-sm btn-ghost" data-action="cancel-edit">Cancel</button>
@@ -504,6 +518,7 @@ function wireEditor(id) {
     const body = {
       label: form.elements.label.value.trim() || undefined,
       budget_pct: capped.checked ? Number(range.value) : null,
+      admin: form.elements.admin.checked,
     };
     setBusy(btn, true, "Saving…");
     try {
@@ -784,7 +799,7 @@ async function dismissAlert(id, btn) {
 
 const addDialog = $("#add-dialog");
 
-async function openAddDialog() {
+async function openAddDialog(admin = false) {
   addDialog.innerHTML = `
     <div class="sheet-head">
       <div>
@@ -796,7 +811,7 @@ async function openAddDialog() {
     <div class="sheet-body"><div class="skel" style="height:3.4rem;border-radius:14px"></div></div>`;
   addDialog.showModal();
   try {
-    const res = await api("/enroll-code", { method: "POST", body: {} });
+    const res = await api("/enroll-code", { method: "POST", body: { admin } });
     showAddResult(res);
   } catch (err) {
     addDialog.innerHTML = `
@@ -809,11 +824,11 @@ async function openAddDialog() {
         <form method="dialog"><button class="btn btn-ghost">Close</button></form>
         <button class="btn btn-primary" id="add-retry">${icon("refresh", 18)}<span>Try again</span></button>
       </div>`;
-    $("#add-retry", addDialog).addEventListener("click", openAddDialog);
+    $("#add-retry", addDialog).addEventListener("click", () => openAddDialog(admin));
   }
 }
 
-function showAddResult({ code, expires_at }) {
+function showAddResult({ code, admin, expires_at }) {
   const url = enrollUrl(code);
   addDialog.innerHTML = `
     <div class="sheet-head">
@@ -826,12 +841,29 @@ function showAddResult({ code, expires_at }) {
     <div class="sheet-body">
       <div class="command link-box"><code id="enroll-url">${esc(url)}</code><button class="btn" id="copy-enroll">${icon("copy", 18)}<span>Copy</span></button></div>
       <p class="muted small">Works for any number of devices${expires_at ? ` until ${esc(whenLocal(expires_at))}` : " for 7 days"}. Anyone with the link can enroll a device into your account, so keep it to yourself.</p>
+      <label class="check-row">
+        <input type="checkbox" id="add-admin" ${admin ? "checked" : ""}>
+        <span><strong>Admin device</strong><br>
+        <span class="muted small">Devices added with this link can change the budget, caps and settings. Leave it off for servers and shared machines; you can change it later on the device.</span></span>
+      </label>
     </div>
     <div class="sheet-foot">
       <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${icon("external", 18)}<span>Add this computer</span></a>
       <form method="dialog"><button class="btn btn-primary">Done</button></form>
     </div>`;
   bindCopy($("#copy-enroll", addDialog), () => url);
+  $("#add-admin", addDialog).addEventListener("change", async (e) => {
+    const box = e.currentTarget;
+    box.disabled = true;
+    try {
+      showAddResult(await api("/enroll-code", { method: "POST", body: { admin: box.checked } }));
+      $("#add-admin", addDialog).focus();
+    } catch (err) {
+      box.checked = !box.checked;
+      box.disabled = false;
+      toast(err.message, { tone: "bad" });
+    }
+  });
   $("#copy-enroll", addDialog).focus();
 }
 

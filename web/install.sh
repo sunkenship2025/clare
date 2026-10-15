@@ -63,8 +63,8 @@ else
 fi
 chmod +x "$bin"
 
-# --no-browser: the person is already on the enrollment page, which offers the browser step.
-set -- enroll "$CODE" --api "$API" --no-browser
+# After enrolling, clare walks through adding its extension to each browser on this computer.
+set -- enroll "$CODE" --api "$API"
 [ -n "$WEB" ] && set -- "$@" --web "$WEB"
 
 if [ "$(id -u)" -eq 0 ]; then

@@ -190,6 +190,7 @@ function render() {
       <div class="welcome-text">
         <h1 id="welcome-title">Add this device to clare</h1>
         <p class="lede">Connect this computer to ${account}${info.owner_name ? ` (${esc(info.owner_name)})` : ""}. clare will count its Claude usage, apply your weekly budget here, and show it on your dashboard. About two minutes.</p>
+        ${info.admin ? `<p class="muted small">This link adds <strong>admin devices</strong>: they can change the budget, caps and settings.</p>` : ""}
       </div>
     </section>
 
@@ -288,6 +289,7 @@ function extensionStep(n) {
   } else {
     const zip = releasesUrl ? `${releasesUrl}/clare-extension.zip` : "";
     body = `${warn}
+      <p class="muted small ext-install">Connecting Claude Code on this computer too? Skip this: the command walks you through every browser, with nothing to download. Later, <code>clare browser</code> does the same.</p>
       <ol class="substeps ext-install">
         <li>Download the extension.
           <div class="step-actions">
@@ -347,6 +349,7 @@ function terminalStep(n) {
         <div class="command"><code id="cmd">${esc(terminalCommand(os))}</code><button class="btn" id="copy-cmd">${icon("copy", 18)}<span>Copy</span></button></div>
       </li>
     </ol>
+    <p class="muted small">Once Claude Code is connected, the command walks you through adding the clare extension to each browser on this computer, one at a time.</p>
     <div class="notice">${icon("lock", 18)}<p>${help.note}</p></div>
     <details class="disclose">
       <summary>What does it install?${icon("chevron", 16)}</summary>
@@ -355,6 +358,7 @@ function terminalStep(n) {
           <li>The <code>clare</code> program (one file, no dependencies).</li>
           <li>Claude Code hooks and a status line, as managed settings, so every terminal and editor on this computer uses them. Your own status line keeps working.</li>
           <li>A background check-in every 5 minutes that reports this computer's health and repairs clare's files if they change.</li>
+          <li>The clare browser extension, as a folder each browser loads with <strong>Load unpacked</strong>. It's kept up to date, and browsers pick up a new version when they restart.</li>
         </ul>
         <p class="muted small">Remove it any time with <code>sudo clare uninstall</code>.</p>
       </div>

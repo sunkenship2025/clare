@@ -37,7 +37,11 @@ func (a *App) runStatusLine() int {
 	var in statusLineInput
 	_ = json.Unmarshal(data, &in)
 
-	if r := parseRateLimits(in.RateLimits, a.Now()); r != nil {
+	// In a profile clare doesn't cover, only your own status line shows: that profile's
+	// meter may belong to a different Claude account.
+	cfg, _ := a.loadConfig()
+	covered := cfg.profileCovered()
+	if r := parseRateLimits(in.RateLimits, a.Now()); r != nil && covered {
 		if os.MkdirAll(a.StateDir, 0o700) == nil {
 			_ = writeJSONAtomic(a.statePath("reading.json"), r, 0o600)
 		}
@@ -50,7 +54,7 @@ func (a *App) runStatusLine() int {
 			fmt.Fprintln(a.Out, out)
 		}
 	}
-	if line := a.statusLineText(); line != "" {
+	if line := a.statusLineText(); covered && line != "" {
 		fmt.Fprintln(a.Out, line)
 	}
 	return 0

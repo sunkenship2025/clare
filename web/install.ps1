@@ -49,8 +49,8 @@ if ($env:CLARE_BINARY) {
   }
 }
 
-# --no-browser: the person is already on the enrollment page, which offers the browser step.
-$enrollArgs = @('enroll', $Code, '--api', $Api, '--no-browser', '--pause')
+# After enrolling, clare walks through adding its extension to each browser on this computer.
+$enrollArgs = @('enroll', $Code, '--api', $Api, '--pause')
 if ($Web) { $enrollArgs += @('--web', $Web) }
 
 Write-Host ''

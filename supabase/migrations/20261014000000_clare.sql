@@ -31,6 +31,8 @@ create table clare_settings (
 
 create table clare_enroll_codes (
   code_hash   text primary key,
+  admin       boolean not null default false,   -- devices enrolled with it can change settings
+  kind        text check (kind is null or kind in ('cli', 'extension')),   -- null = any device
   created_at  timestamptz not null,
   expires_at  timestamptz not null
 );
@@ -44,6 +46,9 @@ create table clare_devices (
   token_hash          text not null unique,
   bye_hash            text,
   enroll_code_hash    text,
+  -- Admin devices (and dashboards opened from them) can change settings, caps and devices.
+  -- Dashboard sessions copy the flag from the device or setup secret that signed them in.
+  admin               boolean not null default false,
   -- Optional weekly cap for this device, in points.
   budget_pct          numeric(6, 2) check (budget_pct is null or (budget_pct > 0 and budget_pct <= 100)),
   problem             text,
@@ -99,6 +104,7 @@ create index clare_alerts_open on clare_alerts (created_at) where resolved_at is
 
 create table clare_login_codes (
   code_hash   text primary key,
+  admin       boolean not null default false,
   expires_at  timestamptz not null,
   used_at     timestamptz
 );

@@ -18,6 +18,8 @@ type Config struct {
 	StrictHooks bool   `json:"strict_hooks"`
 	EnrolledAt  string `json:"enrolled_at"`
 	Version     string `json:"version,omitempty"`
+	// Claude Code profiles clare covers on this computer (empty = all). See profiles.go.
+	Profiles []string `json:"profiles,omitempty"`
 }
 
 var (

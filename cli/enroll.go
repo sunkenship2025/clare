@@ -14,6 +14,7 @@ import (
 type enrollFlags struct {
 	code, api, web, label string
 	pause, noBrowser      bool
+	profiles              []string
 }
 
 // parseEnrollArgs accepts the code before or after flags, and a whole pasted
@@ -50,9 +51,12 @@ func parseEnrollArgs(args []string) enrollFlags {
 			f.pause = true
 		case "no-browser":
 			f.noBrowser = true
+		case "profile", "profiles":
+			f.profiles = append(f.profiles, next())
 		}
 	}
 	f.code = normalizeCode(f.code)
+	f.profiles = parseProfiles(f.profiles)
 	if strings.Contains(f.api, "__CLARE_") {
 		f.api = ""
 	}
@@ -151,6 +155,10 @@ func (a *App) runEnroll(args []string) int {
 			cfg.Label = resp.Status.Device.Label
 		}
 	}
+	cfg.Profiles = f.profiles
+	if len(f.profiles) == 0 && old != nil {
+		cfg.Profiles = old.Profiles // re-enrolling keeps the profile choice unless given again
+	}
 	if sameServer && old.EnrolledAt != "" {
 		cfg.EnrolledAt = old.EnrolledAt // re-install: keep counting from the original enrollment
 	}
@@ -181,15 +189,14 @@ func (a *App) runEnroll(args []string) int {
 		u.ok(line + ".")
 	}
 	u.blank()
+	if len(cfg.Profiles) > 0 {
+		u.ok("Only these Claude Code profiles are covered: " + strings.Join(cfg.Profiles, ", ") + ".")
+	}
 	u.line("  If Claude Code is open right now, restart it.")
 	u.line("  To see usage any time, type:  %s", u.cyan("clare status"))
 
-	if !f.noBrowser && web != "" && chromiumInstalled(a.GOOS) {
-		link := web + "/enroll.html#" + f.code
-		u.blank()
-		u.line("  Using claude.ai in Chrome too? Add the browser extension from the enroll page:")
-		u.line("  %s", u.dim(link))
-		a.openBrowserAsUser(link)
+	if !f.noBrowser {
+		a.runBrowserGuide(u, cfg, f.code)
 	}
 	u.blank()
 	return 0
@@ -222,6 +229,9 @@ func (a *App) installFiles(cfg *Config) error {
 	}
 	if err := a.writeBackup(); err != nil {
 		return fmt.Errorf("saving a backup: %w", err)
+	}
+	if _, err := a.writeExtension(); err != nil {
+		return fmt.Errorf("writing the browser extension: %w", err)
 	}
 	if !a.NoService {
 		if err := a.installService(); err != nil {

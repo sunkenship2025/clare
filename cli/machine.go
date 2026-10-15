@@ -173,38 +173,6 @@ func (a *App) isRoot() bool {
 	return os.Geteuid() == 0
 }
 
-// chromiumInstalled reports whether a Chromium-based browser (Chrome, Arc, Edge,
-// Brave, Vivaldi, Opera, Chromium) is installed, so the extension step applies.
-func chromiumInstalled(goos string) bool {
-	switch goos {
-	case "darwin":
-		home := invokingHome(goos)
-		for _, app := range []string{"Google Chrome", "Arc", "Microsoft Edge", "Brave Browser", "Vivaldi", "Opera", "Chromium"} {
-			if fileExists(filepath.Join("/Applications", app+".app")) || fileExists(filepath.Join(home, "Applications", app+".app")) {
-				return true
-			}
-		}
-	case "windows":
-		for _, dir := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LOCALAPPDATA")} {
-			if dir == "" {
-				continue
-			}
-			for _, exe := range []string{`Google\Chrome\Application\chrome.exe`, `Microsoft\Edge\Application\msedge.exe`, `BraveSoftware\Brave-Browser\Application\brave.exe`} {
-				if fileExists(filepath.Join(dir, exe)) {
-					return true
-				}
-			}
-		}
-	default:
-		for _, bin := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "brave-browser", "microsoft-edge", "vivaldi"} {
-			if _, err := exec.LookPath(bin); err == nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // openBrowserAsUser opens a link in the signed-in user's browser. Under sudo the
 // browser must not start as root, so it runs as the invoking user instead.
 func (a *App) openBrowserAsUser(url string) bool {

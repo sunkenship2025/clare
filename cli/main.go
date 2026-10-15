@@ -16,6 +16,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"runtime"
@@ -42,6 +43,13 @@ type App struct {
 	In        io.Reader
 	Out       io.Writer
 	Err       io.Writer
+
+	// Browser guide. Tests set these; real runs detect browsers, read the terminal, and
+	// use the extension bundled into the binary.
+	TTY      io.Reader
+	Browsers func() []foundBrowser
+	ExtFS    fs.FS
+	opened   []string // test mode: what would have been opened or copied
 }
 
 func newApp() *App {
@@ -106,6 +114,10 @@ func (a *App) run(args []string) (code int) {
 		return a.runStatus()
 	case "dashboard", "dash", "open":
 		return a.runDashboard()
+	case "profile", "profiles":
+		return a.runProfile(args[1:])
+	case "browser", "browsers", "extension":
+		return a.runBrowser()
 	case "doctor":
 		return a.runDoctor()
 	case "uninstall":
@@ -137,6 +149,8 @@ func (a *App) printHelp() {
 	u.blank()
 	u.line("  %s       This week's usage, your budget, and this device", u.cyan("clare status"))
 	u.line("  %s    Open the clare dashboard in your browser", u.cyan("clare dashboard"))
+	u.line("  %s      Add clare's extension to a browser on this computer, step by step", u.cyan("clare browser"))
+	u.line("  %s      Which Claude Code profiles clare covers (sudo clare profile NAME to limit it)", u.cyan("clare profile"))
 	u.line("  %s       Check this computer's setup (add sudo to repair it)", u.cyan("clare doctor"))
 	u.line("  %s    Remove clare from this computer (needs sudo)", u.cyan("clare uninstall"))
 	u.line("  %s      Show the version", u.cyan("clare version"))

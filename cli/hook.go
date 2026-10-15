@@ -44,6 +44,9 @@ func (a *App) runHook(event string) int {
 		}
 		return 0
 	}
+	if !cfg.profileCovered() {
+		return 0 // another Claude Code profile (another account): not clare's business
+	}
 
 	files := sessionFiles(in.TranscriptPath, in.SessionID)
 	now := a.Now()

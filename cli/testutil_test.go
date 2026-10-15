@@ -26,6 +26,9 @@ type fakeAPI struct {
 	meters       []Reading
 	lastTZ       string
 	enrollBody   enrollRequest
+	enrollGets   int            // GET /enroll/<code> calls so far
+	extAfter     int            // from this GET on, one browser shows as enrolled (0 = never)
+	codeBody     map[string]any // last POST /enroll-code body
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -59,6 +62,15 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(enrollResponse{Token: "clr_test", DeviceID: "dev1", Status: &st})
 		return
 	}
+	if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/enroll/") {
+		f.enrollGets++
+		devices := []map[string]any{{"kind": "cli", "label": "Test Mac"}}
+		if f.extAfter > 0 && f.enrollGets >= f.extAfter {
+			devices = append(devices, map[string]any{"kind": "extension", "label": "Chrome on Test Mac"})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"expired": false, "devices": devices})
+		return
+	}
 	if f.unauthorized || r.Header.Get("Authorization") != "Bearer clr_test" {
 		w.WriteHeader(401)
 		w.Write([]byte(`{"error":"unauthorized","message":"This device isn't connected to clare."}`))
@@ -90,6 +102,9 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"status": st, "settings": map[string]any{"enforce": true, "strict_hooks": false}})
 	case "/device/remove":
 		w.Write([]byte(`{"ok":true}`))
+	case "/enroll-code":
+		_ = json.Unmarshal(body, &f.codeBody)
+		w.Write([]byte(`{"code":"brw123","admin":false,"kind":"extension","expires_at":"2030-01-01T00:00:00Z"}`))
 	case "/login-link":
 		w.Write([]byte(`{"code":"LOGIN123","expires_at":"2030-01-01T00:00:00Z"}`))
 	default:

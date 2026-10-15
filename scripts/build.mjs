@@ -83,6 +83,14 @@ if (!args.has("--no-bin")) {
     ["windows", "amd64"],
   ];
   mkdirSync(join(DIST, "bin"), { recursive: true });
+  // The binary carries the built extension (cli/ext, go:embed) so `clare enroll` can write it
+  // to disk for "Load unpacked". Emptied again afterwards so plain `go build` stays extension-free.
+  const EXT = join(ROOT, "cli", "ext");
+  const clearExt = () => {
+    for (const name of readdirSync(EXT)) if (name !== "README.md") rmSync(join(EXT, name), { recursive: true, force: true });
+  };
+  clearExt();
+  cpSync(join(DIST, "extension"), EXT, { recursive: true });
   const ldflags = [
     "-s", "-w",
     `-X main.version=${values.__CLARE_VERSION__}`,
@@ -97,7 +105,8 @@ if (!args.has("--no-bin")) {
       stdio: "inherit",
     });
   }
-  console.log(`✓ cli        dist/bin/ (${targets.length} targets)`);
+  clearExt();
+  console.log(`✓ cli        dist/bin/ (${targets.length} targets, extension bundled)`);
 }
 
 if (!existsSync(join(DIST, "web", "install.sh"))) console.warn("! web/install.sh is missing");

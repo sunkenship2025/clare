@@ -35,6 +35,7 @@ export interface AppOptions {
 
 const DAY_MS = 86_400_000;
 const ENROLL_TTL_MS = 7 * DAY_MS;
+const BROWSER_CODE_TTL_MS = 60 * 60_000;
 const LOGIN_TTL_MS = 10 * 60_000;
 const MAX_EVENTS = 500;
 const CALIBRATE_EVERY_MS = 10 * 60_000;
@@ -96,6 +97,7 @@ interface DeviceRow {
   machine_id: string | null;
   bye_hash: string | null;
   enroll_code_hash: string | null;
+  admin: boolean;
   budget_pct: number | null;
   problem: string | null;
   last_seen_at: Date | null;
@@ -202,6 +204,14 @@ function points(v: unknown, what: string): number {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0 || n > 100) throw fail(400, "bad_budget", `${what} has to be between 0 and 100%.`);
   return Math.round(n * 100) / 100;
+}
+
+/** Changing settings, caps or devices needs an admin device (or a dashboard opened from one). */
+function requireAdmin(ctx: Authed) {
+  if (!ctx.device.admin) {
+    throw fail(403, "admin_only",
+      "Only an admin device can change this. Open the dashboard from an admin device, or run scripts/setup.sh login.");
+  }
 }
 
 // ── Shared state ─────────────────────────────────────────────
@@ -375,8 +385,8 @@ async function setup(sql: Sql, now: Date, secret: string | undefined, b: Record<
     if (n > 0) throw fail(409, "already_setup", "clare is already set up.");
     await tx`insert into clare_settings (id, account_name, owner_name, plan, week_anchor, created_at)
              values (1, ${accountName}, ${ownerName}, ${plan}, ${now}, ${now})`;
-    await tx`insert into clare_login_codes (code_hash, expires_at)
-             values (${await sha256(code)}, ${new Date(now.getTime() + LOGIN_TTL_MS)})`;
+    await tx`insert into clare_login_codes (code_hash, admin, expires_at)
+             values (${await sha256(code)}, true, ${new Date(now.getTime() + LOGIN_TTL_MS)})`;
   });
   return { login_code: code };
 }
@@ -386,17 +396,17 @@ async function recover(ctx: Ctx, secret: string | undefined, b: Record<string, u
   if (!secret) throw fail(503, "setup_disabled", "Setup is turned off on this server.");
   if (!timingSafeEqual(str(b.secret, 200), secret)) throw fail(403, "forbidden", "That setup secret is wrong.");
   const code = randomCode(16);
-  await ctx.sql`insert into clare_login_codes (code_hash, expires_at)
-                values (${await sha256(code)}, ${new Date(ctx.now.getTime() + LOGIN_TTL_MS)})`;
+  await ctx.sql`insert into clare_login_codes (code_hash, admin, expires_at)
+                values (${await sha256(code)}, true, ${new Date(ctx.now.getTime() + LOGIN_TTL_MS)})`;
   return { login_code: code };
 }
 
 async function findEnrollCode(ctx: Ctx, code: string) {
   const hash = await sha256(code.trim().toLowerCase());
-  const [row] = await ctx.sql<{ code_hash: string; expires_at: Date }[]>`
-    select code_hash, expires_at from clare_enroll_codes where code_hash = ${hash}`;
+  const [row] = await ctx.sql<{ code_hash: string; admin: boolean; kind: "cli" | "extension" | null; expires_at: Date }[]>`
+    select code_hash, admin, kind, expires_at from clare_enroll_codes where code_hash = ${hash}`;
   if (!row) throw fail(404, "invalid_code", "This link isn't valid. Make a new one in the clare dashboard (Add a device).");
-  return { hash, expired: new Date(row.expires_at) <= ctx.now };
+  return { hash, admin: row.admin, kind: row.kind, expired: new Date(row.expires_at) <= ctx.now };
 }
 
 async function enrollInfo(ctx: Ctx, code: string) {
@@ -407,6 +417,8 @@ async function enrollInfo(ctx: Ctx, code: string) {
   return {
     account_name: ctx.settings.account_name,
     owner_name: ctx.settings.owner_name,
+    admin: c.admin,
+    kind: c.kind,
     expired: c.expired,
     devices: devices.map((d) => ({ kind: d.kind, label: deviceName(d), created_at: d.created_at, last_seen_at: d.last_seen_at })),
   };
@@ -417,6 +429,9 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
   if (!kind) throw fail(400, "bad_kind", "Unknown device type.");
   const c = await findEnrollCode(ctx, str(b.code, 40));
   if (c.expired) throw fail(410, "expired_code", "This link has expired. Make a new one in the clare dashboard (Add a device).");
+  if (c.kind && c.kind !== kind) {
+    throw fail(403, "wrong_kind", c.kind === "extension" ? "This link only adds a browser." : "This link only adds a computer.");
+  }
   const info = cleanInfo(b.info);
   const machineId = str(info.machine_id, 200) || null;
   const label = str(b.label, 80) || deviceKindName(kind);
@@ -431,11 +446,12 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
                   returning *`).map(toDevice)
       : [];
     const cap = old.find((d) => d.budget_pct != null)?.budget_pct ?? null;
+    const admin = c.admin || old.some((d) => d.admin);
     const [d] = await tx<{ id: string }[]>`
-      insert into clare_devices (kind, label, info, machine_id, token_hash, bye_hash, enroll_code_hash, budget_pct,
+      insert into clare_devices (kind, label, info, machine_id, token_hash, bye_hash, enroll_code_hash, admin, budget_pct,
                                  last_seen_at, created_at, alerts_seen_id)
       values (${kind}, ${label}, ${tx.json(info as postgres.JSONValue)}, ${machineId}, ${await sha256(token)},
-              ${await sha256(bye)}, ${c.hash}, ${cap}, ${ctx.now}, ${ctx.now},
+              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${ctx.now}, ${ctx.now},
               (select coalesce(max(id), 0) from clare_alerts))
       returning id`;
     if (old.length) {
@@ -456,18 +472,18 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
 
 async function login(ctx: Ctx, req: Request, b: Record<string, unknown>) {
   const hash = await sha256(str(b.code, 64));
-  const [row] = await ctx.sql`
+  const [row] = await ctx.sql<{ admin: boolean }[]>`
     update clare_login_codes set used_at = ${ctx.now}
     where code_hash = ${hash} and used_at is null and expires_at > ${ctx.now}
-    returning code_hash`;
+    returning admin`;
   if (!row) throw fail(401, "bad_login", "That sign-in link has expired. Run `clare dashboard` or use Open dashboard in the extension.");
   const token = randomToken("clr_");
   const ua = req.headers.get("user-agent") ?? "";
   const label = /Mobile|Android|iPhone/i.test(ua) ? "Dashboard (phone)" : "Dashboard";
-  await ctx.sql`insert into clare_devices (kind, label, token_hash, last_seen_at, created_at, alerts_seen_id)
-                values ('web', ${label}, ${await sha256(token)}, ${ctx.now}, ${ctx.now},
+  await ctx.sql`insert into clare_devices (kind, label, admin, token_hash, last_seen_at, created_at, alerts_seen_id)
+                values ('web', ${label}, ${row.admin}, ${await sha256(token)}, ${ctx.now}, ${ctx.now},
                         (select coalesce(max(id), 0) from clare_alerts))`;
-  return { token };
+  return { token, admin: row.admin };
 }
 
 async function bye(ctx: Ctx, b: Record<string, unknown>) {
@@ -589,17 +605,24 @@ async function removeSelf(ctx: Authed, b: Record<string, unknown>) {
 async function loginLink(ctx: Authed) {
   const code = randomCode(16);
   const expires = new Date(ctx.now.getTime() + LOGIN_TTL_MS);
-  await ctx.sql`insert into clare_login_codes (code_hash, expires_at) values (${await sha256(code)}, ${expires})`;
+  // The dashboard gets the same rights as the device that opened it.
+  await ctx.sql`insert into clare_login_codes (code_hash, admin, expires_at)
+                values (${await sha256(code)}, ${ctx.device.admin}, ${expires})`;
   return { code, expires_at: expires };
 }
 
-async function enrollCode(ctx: Authed) {
+async function enrollCode(ctx: Authed, b: Record<string, unknown>) {
+  const kind = b.kind === "cli" || b.kind === "extension" ? b.kind : null;
+  // Any device may add a browser (a one-hour, browser-only code, e.g. for `clare browser`), and the
+  // browser gets the same admin rights as the device that asked. Adding computers takes an admin.
+  if (kind !== "extension") requireAdmin(ctx);
+  const admin = b.admin === true && ctx.device.admin;
   const code = randomCode(10);
-  const expires = new Date(ctx.now.getTime() + ENROLL_TTL_MS);
+  const expires = new Date(ctx.now.getTime() + (kind === "extension" ? BROWSER_CODE_TTL_MS : ENROLL_TTL_MS));
   await ctx.sql`delete from clare_enroll_codes where expires_at < ${new Date(ctx.now.getTime() - 30 * DAY_MS)}`;
-  await ctx.sql`insert into clare_enroll_codes (code_hash, created_at, expires_at)
-                values (${await sha256(code)}, ${ctx.now}, ${expires})`;
-  return { code, expires_at: expires };
+  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, created_at, expires_at)
+                values (${await sha256(code)}, ${admin}, ${kind}, ${ctx.now}, ${expires})`;
+  return { code, admin, kind, expires_at: expires };
 }
 
 async function me(ctx: Authed) {
@@ -630,6 +653,7 @@ async function me(ctx: Authed) {
 
   const meterAt = s.meter_at ? new Date(s.meter_at) : null;
   return {
+    me: { device_id: ctx.device.id, kind: ctx.device.kind, admin: ctx.device.admin },
     account: {
       name: s.account_name,
       owner_name: s.owner_name,
@@ -669,6 +693,7 @@ async function me(ctx: Authed) {
         last_seen_at: d.last_seen_at,
         created_at: d.created_at,
         removed_at: d.removed_at,
+        admin: d.admin,
         budget_pct: d.budget_pct,
         usage: {
           points: w.devices.get(d.id)?.points ?? 0,
@@ -695,17 +720,20 @@ function round4(n: number): number {
 }
 
 async function patchDevice(ctx: Authed, id: string, b: Record<string, unknown>) {
+  requireAdmin(ctx);
   const [row] = await ctx.sql`select * from clare_devices where id = ${id} and kind <> 'web'`;
   if (!row) throw fail(404, "not_found", "That device is gone.");
   const d = toDevice(row);
   const label = b.label === undefined ? d.label : str(b.label, 80);
   if (!label) throw fail(400, "bad_label", "A device name can't be empty.");
   const cap = b.budget_pct === undefined ? d.budget_pct : b.budget_pct === null ? null : points(b.budget_pct, "A device budget");
-  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap} where id = ${d.id}`;
+  const admin = typeof b.admin === "boolean" ? b.admin : d.admin;
+  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin} where id = ${d.id}`;
   return { ok: true };
 }
 
 async function removeDevice(ctx: Authed, id: string) {
+  requireAdmin(ctx);
   const [d] = await ctx.sql<{ id: string }[]>`select id from clare_devices where id = ${id}`;
   if (!d) throw fail(404, "not_found", "That device is gone.");
   await ctx.sql`update clare_devices set removed_at = coalesce(removed_at, ${ctx.now}),
@@ -715,6 +743,7 @@ async function removeDevice(ctx: Authed, id: string) {
 }
 
 async function resolveAlert(ctx: Authed, id: string) {
+  requireAdmin(ctx);
   const [a] = await ctx.sql<{ id: number }[]>`select id from clare_alerts where id = ${Number(id) || 0}`;
   if (!a) throw fail(404, "not_found", "That alert is gone.");
   await ctx.sql`update clare_alerts set resolved_at = ${ctx.now} where id = ${a.id}`;
@@ -722,6 +751,7 @@ async function resolveAlert(ctx: Authed, id: string) {
 }
 
 async function patchSettings(ctx: Authed, b: Record<string, unknown>) {
+  requireAdmin(ctx);
   const s = ctx.settings;
   const accountName = b.account_name === undefined ? s.account_name : str(b.account_name, 60) || s.account_name;
   const ownerName = b.owner_name === undefined ? s.owner_name : str(b.owner_name, 60);
@@ -788,7 +818,7 @@ export function createApp(opts: AppOptions) {
       if (method === "POST" && route === "/heartbeat") return json(200, await heartbeat(a, b));
       if (method === "POST" && route === "/device/remove") return json(200, await removeSelf(a, b));
       if (method === "POST" && route === "/login-link") return json(200, await loginLink(a));
-      if (method === "POST" && route === "/enroll-code") return json(200, await enrollCode(a));
+      if (method === "POST" && route === "/enroll-code") return json(200, await enrollCode(a, b));
       if (method === "GET" && route === "/me") return json(200, await me(a));
       if (method === "PATCH" && route === "/settings") return json(200, await patchSettings(a, b));
 

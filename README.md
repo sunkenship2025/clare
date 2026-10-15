@@ -30,6 +30,8 @@ Weekly limit  ████████████████████░░
   Works in every terminal, VS Code, JetBrains and the desktop app.
 - **claude.ai integration.** A Chrome extension meters replies, reads the meter, shows a ring in the toolbar, and holds
   the Send button when you're over budget.
+- **Admin devices.** Only devices you mark as admin can change the budget, caps or settings, or add and remove
+  devices. A server or shared machine reports usage and gets a view-only dashboard.
 - **Device health.** Heartbeats every 5 minutes. You're alerted when a device goes quiet for 2 days, when clare's
   managed files change (they're restored from root-owned backups), or when clare is uninstalled.
 - **Free to run.** Supabase free tier for the backend, GitHub Pages and Releases for the dashboard and downloads.
@@ -107,7 +109,9 @@ name and plan, and opens your dashboard. Then click **Add a device** and open th
 
 - **Claude Code**: paste the one-line command it shows (macOS, Linux, Windows). It asks for your password once to
   install the managed hook system-wide.
-- **claude.ai**: add the extension; it enrolls itself from the same page.
+- **claude.ai**: right after Claude Code, the same command walks you through each browser on that computer:
+  it opens the browser's extensions page, tells you where Developer mode is, and has the extension folder ready
+  to load. On a computer without Claude Code, the enroll page has the download. `clare browser` adds a browser later.
 
 Lost the dashboard link? `scripts/setup.sh login`, `clare dashboard` on any enrolled computer, or "Open dashboard" in
 the extension.
@@ -115,6 +119,9 @@ the extension.
 **Optional:** publish the extension to the Chrome Web Store as *unlisted* (one-time $5 developer fee). Upload
 `dist/clare-extension.zip` from the release, put the store URL in `clare.config.json` → `extensionUrl`, and push a new
 tag. Until then the enroll page offers the zip with load-unpacked steps.
+
+Several Claude Code profiles on one computer, signed in to different accounts (for example with clauth)? Limit clare
+to yours with `sudo clare profile pranav`; the others aren't tracked or limited.
 
 On a computer, `clare status` shows where you stand, `clare doctor` checks (and with `sudo` repairs) the install, and
 `sudo clare uninstall` removes it.

@@ -98,6 +98,7 @@ test("health reports needs_setup, then setup and one-time login", async () => {
   assert.equal(r.status, 200);
   s.web = r.data.token;
   assert.match(s.web, /^clr_/);
+  assert.equal(r.data.admin, true, "the setup link signs in as admin");
 
   r = await call("POST", "/login", { body: { code } });
   assert.equal(r.status, 401, "login codes are single use");
@@ -114,7 +115,7 @@ test("the dashboard mints an enroll code; the enroll page can look it up", async
 
   r = await call("GET", `/enroll/${s.code}`);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.data, { account_name: "Pranav's Claude", owner_name: "Pranav", expired: false, devices: [] });
+  assert.deepEqual(r.data, { account_name: "Pranav's Claude", owner_name: "Pranav", admin: false, kind: null, expired: false, devices: [] });
 
   r = await call("GET", "/enroll/nopenopenope");
   assert.equal(r.status, 404);
@@ -431,6 +432,77 @@ test("settings are validated; a lost dashboard link can be recovered", async () 
   assert.equal(r.status, 200);
   r = await call("GET", "/me", { token: r.data.token });
   assert.equal(r.status, 200);
+});
+
+test("only admin devices, and dashboards opened from them, can change things", async () => {
+  let r = await call("POST", "/enroll-code", { token: s.web, body: { admin: true } });
+  assert.equal(r.data.admin, true);
+  const adminCode = r.data.code;
+  assert.equal((await call("GET", `/enroll/${adminCode}`)).data.admin, true);
+  r = await call("POST", "/enroll", { body: { code: adminCode, kind: "cli", label: "Admin Mac", info: { machine_id: "am" } } });
+  const adminMac = r.data.token;
+
+  r = await call("POST", "/enroll-code", { token: s.web, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Build server", info: { machine_id: "bs" } } });
+  const server = r.data.token;
+  const serverId = r.data.device_id;
+
+  // A regular device does its job but can't change anything.
+  assert.equal((await call("POST", "/check", { token: server })).status, 200);
+  for (const [method, path, body] of [
+    ["PATCH", "/settings", { budget_pct: 100, enforce: false }],
+    ["POST", "/enroll-code", { admin: true }],
+    ["PATCH", `/devices/${serverId}`, { budget_pct: null, admin: true }],
+    ["DELETE", `/devices/${serverId}`, undefined],
+    ["POST", "/alerts/1/resolve", {}],
+  ] as const) {
+    r = await call(method, path, { token: server, body });
+    assert.equal(r.status, 403, `${method} ${path}`);
+    assert.equal(r.data.error, "admin_only");
+  }
+
+  // Its dashboard is view-only too.
+  r = await call("POST", "/login-link", { token: server });
+  r = await call("POST", "/login", { body: { code: r.data.code } });
+  assert.equal(r.data.admin, false);
+  const serverWeb = r.data.token;
+  r = await call("GET", "/me", { token: serverWeb });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.me.admin, false);
+  assert.equal(r.data.devices.find((d: { label: string }) => d.label === "Admin Mac").admin, true);
+  assert.equal((await call("PATCH", "/settings", { token: serverWeb, body: { budget_pct: 50 } })).status, 403);
+
+  // An admin device's dashboard can change things, including making another device admin.
+  r = await call("POST", "/login-link", { token: adminMac });
+  r = await call("POST", "/login", { body: { code: r.data.code } });
+  assert.equal(r.data.admin, true);
+  r = await call("PATCH", `/devices/${serverId}`, { token: r.data.token, body: { admin: true } });
+  assert.equal(r.status, 200);
+  assert.equal((await call("PATCH", "/settings", { token: server, body: { warn_pct: 75 } })).status, 200);
+
+  // Any device can add a browser: a one-hour, browser-only code with the asking device's rights.
+  later(MIN);
+  r = await call("POST", "/enroll-code", { token: s.web, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Mac mini 2", info: { machine_id: "mm2" } } });
+  const regular = r.data.token;
+  r = await call("POST", "/enroll-code", { token: regular, body: { kind: "extension", admin: true } });
+  assert.equal(r.status, 200, "a regular device can add a browser");
+  assert.equal(r.data.admin, false, "but can't hand out admin");
+  assert.equal(r.data.kind, "extension");
+  assert.equal(new Date(r.data.expires_at).getTime(), now.getTime() + HOUR);
+  const browserCode = r.data.code;
+  r = await call("POST", "/enroll", { body: { code: browserCode, kind: "cli", label: "Sneaky" } });
+  assert.equal(r.status, 403);
+  assert.equal(r.data.error, "wrong_kind");
+  r = await call("POST", "/enroll", { body: { code: browserCode, kind: "extension", label: "Chrome on Mac mini" } });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/enroll-code", { token: server, body: { kind: "extension", admin: true } });
+  assert.equal(r.data.admin, true, "an admin device's browsers can be admin");
+
+  // Re-enrolling the same machine with a regular link keeps it admin.
+  r = await call("POST", "/enroll-code", { token: adminMac, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Build server", info: { machine_id: "bs" } } });
+  assert.equal((await call("PATCH", "/settings", { token: r.data.token, body: { warn_pct: 80 } })).status, 200);
 });
 
 test("bad tokens, unknown routes, CORS", async () => {
