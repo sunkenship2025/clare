@@ -126,6 +126,9 @@ else
 fi
 gh api -X POST "repos/$GH_USER/$REPO/pages" -f build_type=workflow >/dev/null 2>&1 ||
   gh api -X PUT "repos/$GH_USER/$REPO/pages" -f build_type=workflow >/dev/null 2>&1 || true
+# Releases are built from version tags; let them publish the site (Pages allows only main by default).
+gh api -X POST "repos/$GH_USER/$REPO/environments/github-pages/deployment-branch-policies" \
+  -f name='v*' -f type=tag >/dev/null 2>&1 || true
 
 # ── 3. Build + publish ────────────────────────────────────────
 bold "3/4  Building the downloads (about 3 minutes)…"
