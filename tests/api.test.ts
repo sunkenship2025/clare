@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.2");
+  assert.equal(r.data.version, "0.2.3");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");

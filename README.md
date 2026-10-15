@@ -113,6 +113,10 @@ name and plan, and opens your dashboard. Then click **Add a device** and open th
   it opens the browser's extensions page, tells you where Developer mode is, and has the extension folder ready
   to load. On a computer without Claude Code, the enroll page has the download. `clare browser` adds a browser later.
 
+Some internet providers (ACT, Jio and Airtel in India, for example) block `*.supabase.co`. Setup offers a free
+Cloudflare Worker relay (`worker/`, a `*.workers.dev` address that forwards everything to Supabase) so every device can
+connect; add it later with `scripts/setup.sh relay`.
+
 Lost the dashboard link? `scripts/setup.sh login`, `clare dashboard` on any enrolled computer, or "Open dashboard" in
 the extension.
 

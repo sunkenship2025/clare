@@ -4,6 +4,7 @@
 #   scripts/setup.sh          # create the free backend, publish site + downloads, open your dashboard
 #   scripts/setup.sh login    # lost your dashboard link? get a fresh one
 #   scripts/setup.sh deploy   # redeploy the backend after pulling changes
+#   scripts/setup.sh relay    # add a Cloudflare relay for networks that block supabase.co
 #
 # Needs: node, git, gh (GitHub CLI), openssl, curl. Free accounts on Supabase and GitHub.
 # Secrets it creates are kept in .clare-secret (git-ignored) on this computer only.
@@ -34,7 +35,19 @@ open_url() { (command -v open >/dev/null && open "$1") || (command -v xdg-open >
 
 [ -f "$STATE" ] && . "./$STATE"
 
-api_url() { printf 'https://%s.supabase.co/functions/v1/api' "$PROJECT_REF"; }
+supabase_url() { printf 'https://%s.supabase.co/functions/v1/api' "$PROJECT_REF"; }
+# Devices talk to the relay when there is one (some ISPs block *.supabase.co).
+api_url() { if [ -n "${RELAY_URL:-}" ]; then printf '%s' "$RELAY_URL"; else supabase_url; fi; }
+
+# A free Cloudflare Worker that forwards everything to the Supabase function (worker/).
+deploy_relay() {
+  out=$(cd worker && npx -y wrangler@4 deploy --var "TARGET:$(supabase_url)" 2>&1) || { printf '%s\n' "$out"; return 1; }
+  RELAY_URL=$(printf '%s\n' "$out" | grep -Eo 'https://[a-z0-9.-]+\.workers\.dev' | head -1)
+  [ -n "$RELAY_URL" ] || { printf '%s\n' "$out"; echo "Couldn't find the relay's address."; return 1; }
+  save RELAY_URL "$RELAY_URL"
+  node -e 'const f="clare.config.json",c=require("./"+f);c.apiUrl=process.argv[1];require("fs").writeFileSync(f,JSON.stringify(c,null,2)+"\n")' "$RELAY_URL"
+  curl -fsS "$RELAY_URL/health" >/dev/null && info "✓ relay is live at $RELAY_URL"
+}
 
 dashboard_link() {
   code=$(curl -fsS -X POST "$(api_url)/recover" -H 'content-type: application/json' \
@@ -54,9 +67,10 @@ deploy_backend() {
 
 case "${1:-setup}" in
   login) dashboard_link; exit 0 ;;
-  deploy) deploy_backend; exit 0 ;;
+  deploy) deploy_backend; [ -z "${RELAY_URL:-}" ] || deploy_relay; exit 0 ;;
+  relay) deploy_relay; info "Commit clare.config.json and push a new version tag so new downloads use it."; exit 0 ;;
   setup) ;;
-  *) echo "usage: scripts/setup.sh [setup|login|deploy]"; exit 2 ;;
+  *) echo "usage: scripts/setup.sh [setup|login|deploy|relay]"; exit 2 ;;
 esac
 
 need node "https://nodejs.org"
@@ -98,7 +112,11 @@ until $SB link --project-ref "$PROJECT_REF" -p "$DB_PASSWORD" >/dev/null 2>&1; d
   sleep 10
 done
 deploy_backend
-curl -fsS "$(api_url)/health" >/dev/null && info "✓ backend is live at $(api_url)"
+curl -fsS "$(supabase_url)/health" >/dev/null && info "✓ backend is live at $(supabase_url)"
+if [ -z "${RELAY_URL:-}" ]; then
+  RELAY=$(ask "Some internet providers (e.g. ACT, Jio, Airtel in India) block supabase.co. Add a free Cloudflare relay so every device can connect? [Y/n]" y)
+  case "$RELAY" in [Nn]*) ;; *) deploy_relay || info "Skipped the relay. Add it later with: scripts/setup.sh relay" ;; esac
+fi
 
 # ── 2. GitHub ─────────────────────────────────────────────────
 bold "2/4  Website + downloads (GitHub, free)"

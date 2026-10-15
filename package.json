@@ -1,6 +1,6 @@
 {
   "name": "clare",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "Cross-device usage monitoring and budget enforcement for your Claude account.",

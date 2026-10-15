@@ -1,0 +1,5 @@
+name = "clare-api"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+# TARGET is set by scripts/setup.sh (wrangler deploy --var TARGET:…).

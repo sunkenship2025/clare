@@ -49,7 +49,7 @@ Source files use placeholders replaced by `scripts/build.mjs` (and by the dev se
 
 | Placeholder | Example |
 |---|---|
-| `__CLARE_API_URL__` | `https://abcd.supabase.co/functions/v1/api` |
+| `__CLARE_API_URL__` | `https://abcd.supabase.co/functions/v1/api`, or the relay `https://clare-api.<sub>.workers.dev` |
 | `__CLARE_WEB_URL__` | `https://you.github.io/clare` (no trailing slash) |
 | `__CLARE_RELEASES_URL__` | `https://github.com/you/clare/releases/latest/download` |
 
@@ -381,3 +381,10 @@ without the bundled extension points at the enroll page's download instead.
 
 Only numbers and device metadata leave a computer: token counts, model names, timestamps, meter percentages, device
 names, OS and browser names. Never prompts, responses, file contents, or conversation titles.
+
+## Relay
+
+Some ISPs block `*.supabase.co` by DNS. `worker/worker.js` is a Cloudflare Worker that forwards every request (method,
+path, query, headers, body) to `TARGET` = the Supabase function URL and returns the response untouched, CORS included.
+`scripts/setup.sh relay` deploys it and makes it the `apiUrl` that builds bake in. Devices enrolled earlier keep the
+address they were given; both reach the same backend.
