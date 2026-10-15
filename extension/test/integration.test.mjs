@@ -115,9 +115,14 @@ test("service worker against a live API", { skip: !API && "set CLARE_TEST_API to
     await chromeFake.fire("installed", { reason: "install" });
     assert.ok(chromeFake.alarms.heartbeat, "heartbeat alarm scheduled");
 
-    // 1. Enroll from a pasted enroll link.
-    let r = await chromeFake.send({ type: "enroll", code: `${WEB}/enroll.html#${code}` });
+    // 1. Enroll from a pasted enroll link, while a second enroll tab connects at the same time.
+    let [r, r2] = await Promise.all([
+      chromeFake.send({ type: "enroll", code: `${WEB}/enroll.html#${code}` }),
+      chromeFake.send({ type: "enroll", code }),
+    ]);
     assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    assert.equal(r2.already, true, "the second tab finds this browser already enrolled");
     assert.ok(r.device, "reports this browser's device name");
     assert.equal(r.state.paired, true);
     assert.equal(r.state.status.state, "ok");

@@ -141,7 +141,17 @@ async function unpair(reason) {
  * Already enrolled with this clare server and the token still works → nothing to do,
  * whatever the code (every code belongs to the same account).
  */
-async function enroll(code) {
+// One enrollment at a time: two enroll tabs (or the popup and a tab) connecting at once
+// would each enroll, the later one replacing the earlier on the server, and this browser
+// could end up keeping the replaced token.
+let enrolling = Promise.resolve();
+function enroll(code) {
+  const run = enrolling.then(() => enrollOnce(code));
+  enrolling = run.catch(() => {});
+  return run;
+}
+
+async function enrollOnce(code) {
   if (!code) return { ok: false, error: "bad_code", message: "That doesn't look like a clare enroll link or code." };
   let st = await load();
 
