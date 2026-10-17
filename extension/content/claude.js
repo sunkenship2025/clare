@@ -322,7 +322,9 @@
 
     if (blocking) {
       var device = s.scope === "device";
-      var title = device ? "This browser's weekly Claude budget is used up" : "This week's Claude budget is used up";
+      var title = s.scope === "group" && s.group
+        ? C.groupPhrase(s.group.label).replace(/^t/, "T") + "'s weekly Claude share is used up"
+        : device ? "This browser's weekly Claude budget is used up" : "This week's Claude budget is used up";
       if (collapsed) {
         show(
           '<div class="pill bad"><span class="dot"></span><span>' +
@@ -344,7 +346,9 @@
     }
 
     if (state.paired && s && (s.state === "warn" || s.state === "over") && state.dismissedFor !== noticeKey(s)) {
-      var scope = s.scope === "device" ? "this browser's weekly budget" : "this week's budget";
+      var scope = s.scope === "group" && s.group
+        ? C.groupPhrase(s.group.label) + "'s weekly share"
+        : s.scope === "device" ? "this browser's weekly budget" : "this week's budget";
       var text =
         s.state === "over"
           ? "Over " + scope + " (monitor only, nothing is blocked)"

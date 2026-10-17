@@ -1,7 +1,7 @@
 // Pure clare logic: rates, credits, meter readings, attribution, budgets, status copy.
 // No I/O and no runtime-specific APIs, so it runs unchanged in Deno (edge) and Node (dev + tests).
 
-export const VERSION = "0.2.4";
+export const VERSION = "0.2.5";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -478,11 +478,12 @@ export interface Status {
   allowed: boolean;
   state: State;
   basis: "meter" | "estimate";
-  scope: "account" | "device";
+  scope: "account" | "group" | "device"; // which limit used/limit/pct describe: the one closest to running out
   used: number;
   limit: number;
   pct: number;
   account: { used: number; budget: number; pct: number };
+  group: { id: string; label: string; used: number; budget: number; pct: number } | null;
   device: { id: string; label: string; used: number; budget: number | null; pct: number | null } | null;
   resets_at: string;
   enforce: boolean;
@@ -493,6 +494,7 @@ export interface Status {
 
 export interface StatusInput {
   account: { used: number; budget: number; warn_pct: number; enforce: boolean; strict_hooks: boolean };
+  group?: { id: string; label: string; used: number; budget: number } | null;
   device: { id: string; label: string; used: number; budget: number | null } | null;
   basis: "meter" | "estimate";
   resets_at: Date;
@@ -516,11 +518,26 @@ export function evaluate(i: StatusInput): Status {
       pct: i.device.budget != null ? pctOf(i.device.used, i.device.budget) : null,
     }
     : null;
-  const byDevice = device != null && device.pct != null && device.pct > account.pct;
-  const scope = byDevice ? "device" : "account";
-  const used = byDevice ? device!.used : account.used;
-  const limit = byDevice ? device!.budget! : account.budget;
-  const pct = byDevice ? device!.pct! : account.pct;
+  const group = i.group
+    ? { id: i.group.id, label: i.group.label, used: round2(i.group.used), budget: i.group.budget, pct: pctOf(i.group.used, i.group.budget) }
+    : null;
+  // A device stops at the first of its own cap, its group's share, and the account budget.
+  let scope: Status["scope"] = "account";
+  let used = account.used;
+  let limit = account.budget;
+  let pct = account.pct;
+  if (group && group.pct > pct) {
+    scope = "group";
+    used = group.used;
+    limit = group.budget;
+    pct = group.pct;
+  }
+  if (device && device.pct != null && device.pct > pct) {
+    scope = "device";
+    used = device.used;
+    limit = device.budget!;
+    pct = device.pct;
+  }
 
   let state: State = "ok";
   if (pct >= 100) state = i.account.enforce ? "blocked" : "over";
@@ -538,6 +555,15 @@ export function evaluate(i: StatusInput): Status {
       blocked: `You've used all of this week's Claude budget. It resets ${when}. You can change the budget in the clare dashboard.`,
       over: `You're over this week's Claude budget (monitor only, nothing is blocked). It resets ${when}.`,
     }[state];
+  } else if (scope === "group") {
+    const g = groupPhrase(group!.label);
+    const G = g[0].toUpperCase() + g.slice(1);
+    message = {
+      ok: `${G} has used ${about}${p}% of its weekly share.`,
+      warn: `Heads up: ${g} has used ${about}${p}% of its weekly share. It resets ${when}.`,
+      blocked: `${G} has used all of its weekly share. It resets ${when}. You can change it in the clare dashboard.`,
+      over: `${G} is over its weekly share (monitor only, nothing is blocked). It resets ${when}.`,
+    }[state];
   } else {
     message = {
       ok: `${label} has used ${about}${p}% of its weekly budget.`,
@@ -546,7 +572,8 @@ export function evaluate(i: StatusInput): Status {
       over: `${label} is over its weekly budget (monitor only, nothing is blocked). It resets ${when}.`,
     }[state];
   }
-  const title = state === "blocked" ? "Budget used up" : state === "over" ? "Over budget" : `${about ? "~" : ""}${p}% used`;
+  const what = scope === "group" ? "Share" : "Budget";
+  const title = state === "blocked" ? `${what} used up` : state === "over" ? `Over ${what.toLowerCase()}` : `${about ? "~" : ""}${p}% used`;
 
   return {
     allowed: state !== "blocked",
@@ -557,6 +584,7 @@ export function evaluate(i: StatusInput): Status {
     limit,
     pct,
     account,
+    group,
     device,
     resets_at: i.resets_at.toISOString(),
     enforce: i.account.enforce,
@@ -564,6 +592,13 @@ export function evaluate(i: StatusInput): Status {
     title,
     message,
   };
+}
+
+/** "the pranav group", or "the Work group" when the name already says it's a group. */
+export function groupPhrase(label: string): string {
+  const name = label.trim();
+  if (!name) return "the group";
+  return /\bgroup$/i.test(name) ? `the ${name}` : `the ${name} group`;
 }
 
 /** "today at 9:30 PM", "tomorrow at 9:30 PM", "on Monday at 9:30 PM", "on Oct 20 at 9:30 PM". */

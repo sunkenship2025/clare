@@ -243,6 +243,28 @@ test("status copy: plain words for every state and scope", () => {
       assert.doesNotMatch(words, /token|credit|\$|quota|API|share|member|invite|manager|paused/i, `${state}/${scope}`);
     }
   }
+  // A group's share of the weekly limit: "share" here is a portion of your own limit.
+  const grp = (state, extra = {}) => acct(state, { scope: "group", group: { id: "g2", label: "joy", used: 25.5, budget: 30, pct: 85 }, ...extra });
+  assert.equal(C.headline(grp("blocked"), o), "Share used up");
+  assert.equal(C.headline(grp("ok"), o), "Within its share");
+  assert.equal(C.ringCaption(grp("ok")), "of the joy group's weekly share");
+  assert.equal(
+    C.detailLine(grp("blocked"), o),
+    "The joy group has used its weekly share. It resets Monday at 9:30 PM. You can change the share in the clare dashboard."
+  );
+  assert.equal(
+    C.bannerText(grp("blocked"), o),
+    "The joy group has used all of its weekly share. It resets Monday at 9:30 PM. You can change it in the clare dashboard."
+  );
+  assert.equal(C.bannerText(grp("warn"), o), "Heads up: the joy group has used 85% of its weekly share. It resets Monday at 9:30 PM.");
+  assert.equal(C.groupPhrase("Work group"), "the Work group");
+  for (const state of ["ok", "warn", "over", "blocked"]) {
+    const st = grp(state);
+    const words = [C.headline(st, o), C.shortLine(st, o), C.detailLine(st, o), C.bannerText(st, o), C.ringCaption(st)]
+      .join(" ")
+      .replace(/(('s weekly|its weekly|its|the) share|share used up)\b/gi, "");
+    assert.doesNotMatch(words, /token|credit|\$|quota|API|share|member|invite|manager|paused/i, `${state}/group`);
+  }
   assert.equal(C.pctLabel(0.4), "<1%");
   assert.equal(C.pctLabel(84.6), "85%");
   assert.equal(C.pctLabel(0), "0%");

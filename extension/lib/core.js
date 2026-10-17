@@ -212,18 +212,34 @@
     return !!(status && status.scope === "device");
   }
 
+  /** The group's share of the weekly limit is what's closest to running out. */
+  function isGroupScope(status) {
+    return !!(status && status.scope === "group" && status.group);
+  }
+
+  /** "the pranav group", or "the Work group" when the name already says it's a group. */
+  function groupPhrase(label) {
+    var name = String(label || "").trim();
+    if (!name) return "the group";
+    return /\bgroup$/i.test(name) ? "the " + name : "the " + name + " group";
+  }
+
+  function capitalize(text) {
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   /** One short sentence for the popup headline. */
   function headline(status, opts) {
     if (!status) return "Checking…";
     switch (status.state) {
       case "blocked":
-        return isDeviceScope(status) ? "Cap used up" : "Budget used up";
+        return isDeviceScope(status) ? "Cap used up" : isGroupScope(status) ? "Share used up" : "Budget used up";
       case "over":
-        return "Over budget";
+        return isGroupScope(status) ? "Over its share" : "Over budget";
       case "warn":
         return "Getting close";
       default:
-        return "Within budget";
+        return isGroupScope(status) ? "Within its share" : "Within budget";
     }
   }
 
@@ -234,6 +250,10 @@
     var resets = when ? "It resets " + when + "." : "";
     switch (status.state) {
       case "blocked":
+        if (isGroupScope(status)) {
+          return (capitalize(groupPhrase(status.group.label)) + " has used its weekly share. " + resets +
+            " You can change the share in the clare dashboard.").replace("  ", " ");
+        }
         return isDeviceScope(status)
           ? ("This browser has used its weekly cap. " + resets + " You can change the cap in the clare dashboard.").replace("  ", " ")
           : (resets + " You can change the budget in the clare dashboard.").trim();
@@ -253,6 +273,7 @@
 
   /** What the ring's number is a percentage of. */
   function ringCaption(status) {
+    if (isGroupScope(status)) return "of " + groupPhrase(status.group.label) + "'s weekly share";
     return isDeviceScope(status) ? "of this browser's weekly cap" : "of weekly budget used";
   }
 
@@ -271,6 +292,19 @@
     var when = formatReset(status.resets_at, opts);
     var resets = when ? " It resets " + when + "." : "";
     var device = isDeviceScope(status);
+    if (isGroupScope(status)) {
+      var g = groupPhrase(status.group.label);
+      switch (status.state) {
+        case "blocked":
+          return capitalize(g) + " has used all of its weekly share." + resets + " You can change it in the clare dashboard.";
+        case "over":
+          return capitalize(g) + " is over its weekly share (monitor only, nothing is blocked)." + resets;
+        case "warn":
+          return "Heads up: " + g + " has used " + pctLabel(status.pct) + " of its weekly share." + resets;
+        default:
+          return "";
+      }
+    }
     switch (status.state) {
       case "blocked":
         return device
@@ -354,6 +388,7 @@
     cleanReading: cleanReading,
     isBlocking: isBlocking,
     formatReset: formatReset,
+    groupPhrase: groupPhrase,
     headline: headline,
     detailLine: detailLine,
     shortLine: shortLine,

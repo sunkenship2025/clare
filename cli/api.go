@@ -17,11 +17,12 @@ type Status struct {
 	Allowed     bool       `json:"allowed"`
 	State       string     `json:"state"` // ok | warn | over | blocked
 	Basis       string     `json:"basis"` // meter | estimate
-	Scope       string     `json:"scope"` // account | device: which budget Used/Limit/Pct describe
+	Scope       string     `json:"scope"` // account | group | device: which limit Used/Limit/Pct describe
 	Used        float64    `json:"used"`  // points (1 point = 1% of the weekly limit)
 	Limit       float64    `json:"limit"`
 	Pct         float64    `json:"pct"`
 	Account     AccountUse `json:"account"`
+	Group       *GroupUse  `json:"group"`
 	Device      *DeviceUse `json:"device"`
 	ResetsAt    string     `json:"resets_at"`
 	Enforce     bool       `json:"enforce"`
@@ -35,6 +36,27 @@ type AccountUse struct {
 	Used   float64 `json:"used"`
 	Budget float64 `json:"budget"`
 	Pct    float64 `json:"pct"`
+}
+
+// GroupUse is this device's group against its share of the weekly limit, in points; nil outside a group.
+type GroupUse struct {
+	ID     string  `json:"id"`
+	Label  string  `json:"label"`
+	Used   float64 `json:"used"`
+	Budget float64 `json:"budget"`
+	Pct    float64 `json:"pct"`
+}
+
+// groupPhrase is "the pranav group", or "the Work group" when the name already says it's a group.
+func groupPhrase(label string) string {
+	name := strings.TrimSpace(label)
+	if name == "" {
+		return "the group"
+	}
+	if lower := strings.ToLower(name); lower == "group" || strings.HasSuffix(lower, " group") {
+		return "the " + name
+	}
+	return "the " + name + " group"
 }
 
 // DeviceUse is this device's part of the week's usage; Budget and Pct are nil without a device cap.

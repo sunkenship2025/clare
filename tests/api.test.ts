@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.4");
+  assert.equal(r.data.version, "0.2.5");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");
@@ -575,4 +575,119 @@ test("single-source meter rises are learned and reported on /me", async () => {
   const r = await call("GET", "/me", { token: s.web });
   assert.equal(typeof r.data.account.estimation.browser_weight, "number");
   assert.equal(r.data.account.estimation.min_points, 3);
+});
+
+test("groups: a group's computers share part of the weekly limit", async () => {
+  const me = async () => (await call("GET", "/me", { token: s.web })).data;
+  type Member = { id: string; group_id: string | null; usage: { points: number } };
+  const find = (m: { devices: Member[] }, id: string) => m.devices.find((d) => d.id === id)!;
+
+  // A computer with a browser on it.
+  let r = await call("POST", "/enroll-code", { token: s.web, body: { admin: true } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Air", info: { machine_id: "air-1" } } });
+  const air = r.data.token;
+  const airId = r.data.device_id;
+  r = await call("POST", "/enroll-code", { token: air, body: { kind: "extension" } });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "extension", label: "Chrome on Air", info: { machine_id: "air-chrome" } } });
+  const chrome = r.data.token;
+  const chromeId = r.data.device_id;
+
+  // A group needs a name and a share; a browser on a computer can't join on its own.
+  r = await call("POST", "/groups", { token: s.web, body: { label: " ", budget_pct: 50 } });
+  assert.equal(r.status, 400);
+  r = await call("POST", "/groups", { token: s.web, body: { label: "pranav", budget_pct: 0 } });
+  assert.equal(r.status, 400);
+  r = await call("POST", "/groups", { token: s.web, body: { label: "pranav", budget_pct: 50, device_ids: [chromeId] } });
+  assert.equal(r.status, 400);
+  assert.equal((await me()).groups.length, 0, "a rejected group isn't half made");
+  r = await call("POST", "/groups", { token: s.web, body: { label: "pranav", budget_pct: 50, device_ids: [airId] } });
+  assert.equal(r.status, 200);
+  const pranav = r.data.id;
+
+  // An "Add a device" link can put the new computer straight into a group.
+  later(MIN);
+  r = await call("POST", "/groups", { token: s.web, body: { label: "joy", budget_pct: 50 } });
+  const joy = r.data.id;
+  r = await call("POST", "/enroll-code", { token: s.web, body: { group_id: joy } });
+  assert.equal(r.data.group_id, joy);
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "joy's Claude Code", info: { os: "Windows", machine_id: "joy-1" } } });
+  const joyPc = r.data.token;
+  const joyPcId = r.data.device_id;
+  assert.deepEqual(r.data.status.group, { id: joy, label: "joy", used: 0, budget: 50, pct: 0 });
+  r = await call("POST", "/enroll-code", { token: s.web, body: { group_id: "00000000-0000-0000-0000-000000000000" } });
+  assert.equal(r.status, 400);
+
+  // The browser is judged with its computer's group, and both count toward it.
+  later(MIN);
+  await call("POST", "/report", { token: air, body: { events: [opus("air:1", 16)] } });
+  r = await call("POST", "/report", { token: chrome, body: { events: [{ ...opus("airweb:1", 8), estimated: true }] } });
+  const g = r.data.status.group;
+  let m = await me();
+  assert.equal(g.id, pranav);
+  assert.ok(g.used > 1, String(g.used));
+  assert.ok(Math.abs(g.used - (find(m, airId).usage.points + find(m, chromeId).usage.points)) < 0.01);
+  assert.deepEqual(m.groups.map((x: { label: string; budget_pct: number }) => [x.label, x.budget_pct]), [["pranav", 50], ["joy", 50]]);
+  assert.equal(find(m, airId).group_id, pranav);
+  assert.equal(find(m, chromeId).group_id, null, "browsers follow their computer");
+
+  // A share smaller than what's used stops that group's computers, not the other group's.
+  r = await call("PATCH", `/groups/${pranav}`, { token: s.web, body: { budget_pct: 1 } });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/check", { token: chrome });
+  assert.equal(r.data.status.scope, "group");
+  assert.equal(r.data.status.state, "blocked");
+  assert.equal(r.data.status.title, "Share used up");
+  assert.match(r.data.status.message, /^The pranav group has used all of its weekly share\./);
+  r = await call("POST", "/check", { token: joyPc });
+  assert.equal(r.data.status.state, "ok");
+
+  // Moving a computer into a group, out of it, and into one that's gone.
+  r = await call("PATCH", `/devices/${joyPcId}`, { token: s.web, body: { group_id: pranav } });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/check", { token: joyPc });
+  assert.equal(r.data.status.group.id, pranav);
+  assert.equal(r.data.status.state, "blocked");
+  await call("PATCH", `/devices/${joyPcId}`, { token: s.web, body: { group_id: null } });
+  r = await call("POST", "/check", { token: joyPc });
+  assert.equal(r.data.status.group, null);
+  r = await call("PATCH", `/devices/${joyPcId}`, { token: s.web, body: { group_id: "00000000-0000-0000-0000-000000000000" } });
+  assert.equal(r.status, 400);
+
+  // A group's member list says exactly who's in it.
+  await call("PATCH", `/groups/${joy}`, { token: s.web, body: { label: "Joy", device_ids: [joyPcId] } });
+  assert.equal(find(await me(), joyPcId).group_id, joy);
+  await call("PATCH", `/groups/${joy}`, { token: s.web, body: { device_ids: [] } });
+  m = await me();
+  assert.equal(find(m, joyPcId).group_id, null);
+  assert.equal(m.groups.find((x: { id: string }) => x.id === joy).label, "Joy");
+
+  // Reinstalling clare on a computer keeps its group, and its browser follows.
+  r = await call("POST", "/enroll-code", { token: s.web, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Air", info: { machine_id: "air-1" } } });
+  const air2 = r.data.token;
+  assert.equal(r.data.status.group.id, pranav);
+  r = await call("POST", "/check", { token: chrome });
+  assert.equal(r.data.status.group.id, pranav);
+
+  // Regular devices can't change groups.
+  r = await call("POST", "/enroll-code", { token: s.web, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Kiosk", info: { machine_id: "kiosk" } } });
+  const kiosk = r.data.token;
+  for (const [method, path, body] of [
+    ["POST", "/groups", { label: "x", budget_pct: 10 }],
+    ["PATCH", `/groups/${joy}`, { budget_pct: 90 }],
+    ["DELETE", `/groups/${joy}`, undefined],
+  ] as const) {
+    r = await call(method, path, { token: kiosk, body });
+    assert.equal(r.status, 403, `${method} ${path}`);
+  }
+
+  // Deleting a group only takes its computers out of it.
+  r = await call("DELETE", `/groups/${pranav}`, { token: s.web });
+  assert.equal(r.status, 200);
+  r = await call("POST", "/check", { token: air2 });
+  assert.equal(r.data.status.group, null);
+  assert.equal(r.data.status.state, "ok");
+  assert.equal((await call("DELETE", `/groups/${pranav}`, { token: s.web })).status, 404);
+  assert.equal((await call("PATCH", `/groups/${pranav}`, { token: s.web, body: {} })).status, 404);
 });

@@ -17,7 +17,7 @@ let data = null; // last GET /me payload
 let lastOkAt = null;
 let pollTimer = null;
 let pendingRender = false;
-const ui = { editing: null };
+const ui = { editing: null, editingGroup: null };
 
 /* ================= boot & data ================= */
 
@@ -94,7 +94,7 @@ function anyDialogOpen() {
 
 function focusInsideApp() {
   const a = document.activeElement;
-  return !!a && a !== document.body && app.contains(a) && (ui.editing || a.matches("input, select, textarea"));
+  return !!a && a !== document.body && app.contains(a) && (ui.editing || ui.editingGroup || a.matches("input, select, textarea"));
 }
 
 app.addEventListener("focusout", () => {
@@ -123,7 +123,21 @@ function rootOf(d) {
 const childrenOf = (root) => devices().filter((d) => d.id !== root.id && rootOf(d).id === root.id);
 const roots = () => devices().filter((d) => rootOf(d).id === d.id);
 /** This week's points for a computer and its browsers together. */
-const groupPoints = (root) => [root, ...childrenOf(root)].reduce((sum, d) => sum + (d.usage?.points || 0), 0);
+const computerPoints = (root) => [root, ...childrenOf(root)].reduce((sum, d) => sum + (d.usage?.points || 0), 0);
+/** Groups of computers that share part of the weekly limit. Browsers go with their computer. */
+const groups = () => data?.groups || [];
+const groupById = (id) => (id && groups().find((g) => g.id === id)) || null;
+const groupOf = (d) => groupById(rootOf(d).group_id);
+const groupRoots = (g) => roots().filter((r) => r.group_id === g.id);
+const groupUsed = (g) => groupRoots(g).reduce((sum, r) => sum + computerPoints(r), 0);
+/** Computers in group order (ungrouped last), oldest first within each. */
+function byGroupThenAge(a, b) {
+  const at = (r) => {
+    const i = groups().findIndex((g) => g.id === r.group_id);
+    return i < 0 ? groups().length : i;
+  };
+  return at(a) - at(b) || new Date(a.created_at) - new Date(b.created_at);
+}
 const enrollUrl = (code) => `${webUrl}/enroll.html#${code}`;
 const isEstimate = () => account().basis === "estimate";
 const about = () => (isEstimate() ? "about " : "");
@@ -209,6 +223,20 @@ function stateChip(state) {
   return `<span class="chip ${cls}">${text}</span>`;
 }
 
+/** ok / warn / blocked / over for usage against a limit, using the account's warning level. */
+function limitState(used, limit) {
+  const p = limit > 0 ? (used / limit) * 100 : 0;
+  if (p >= 100) return account().enforce === false ? "over" : "blocked";
+  return p >= (account().warn_pct ?? 80) ? "warn" : "ok";
+}
+
+const GROUP_CHIP = {
+  ok: ["chip-ok", "On track"],
+  warn: ["chip-warn", "Getting close"],
+  blocked: ["chip-bad", "Share used up"],
+  over: ["chip-bad", "Over its share"],
+};
+
 const MODEL_NAMES = { fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
 
 function modelSplit(byModel) {
@@ -244,6 +272,7 @@ function render() {
 
   wireViz();
   if (ui.editing) wireEditor(ui.editing);
+  if (ui.editingGroup) wireGroupEditor(ui.editingGroup);
 }
 
 function renderTopbar() {
@@ -263,17 +292,16 @@ function limitSegments(acc) {
   if ((acc.before_clare || 0) > 0.05) {
     segs.push({ key: "before", name: "Before clare", value: acc.before_clare, color: "var(--before)", note: "Already used this week before clare was set up." });
   }
-  const order = [...roots()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+  // A group's computers sit next to each other on the bar.
+  const order = [...roots()].sort(byGroupThenAge);
   let other = 0;
-  order.forEach((d, i) => {
-    const v = groupPoints(d);
-    if (!(v > 0.05)) return;
-    if (i >= SLOTS) {
-      other += v;
-      return;
-    }
-    segs.push({ key: d.id, name: deviceLabel(d), value: v, color: colorFor(d.id) });
-  });
+  for (const d of order) {
+    const v = computerPoints(d);
+    if (!(v > 0.05)) continue;
+    const color = colorFor(d.id);
+    if (color === "var(--other)") other += v;
+    else segs.push({ key: d.id, name: deviceLabel(d), value: v, color });
+  }
   if (other > 0.05) segs.push({ key: "other", name: "Other devices", value: other, color: "var(--other)" });
   if ((acc.unobserved || 0) > 0.05) {
     segs.push({ key: "unobserved", name: "Unobserved", value: acc.unobserved, color: "var(--before)", texture: true,
@@ -369,6 +397,7 @@ function overviewHtml() {
           <div class="lim-scale muted small" aria-hidden="true"><span>0%</span><span>Weekly limit</span><span>${scale > 100 ? pts(scale) : "100%"}</span></div>
         </div>
         ${segs.length ? `<ul class="legend">${legend}</ul>` : `<p class="muted small">Nothing used yet this week.</p>`}
+        ${sharesHtml()}
         <div class="budget-line small">
           <p><strong>${esc(budget >= 100 ? "Budget: the full weekly limit" : `Budget: ${pts(budget)} of the weekly limit`)}</strong>, warning at ${pct(acc.warn_pct ?? 80)} of it.
             <span class="muted">${enforceLine}</span></p>
@@ -377,6 +406,54 @@ function overviewHtml() {
         ${notes.length ? `<ul class="viz-notes muted small">${notes.map((n) => `<li>${n}</li>`).join("")}</ul>` : ""}
       </figure>
     </section>`;
+}
+
+/* ---------- group shares ---------- */
+
+/** A group's usage as one bar scaled to its share, each computer in its own color. */
+function shareBarHtml(g, cls = "") {
+  const share = g.budget_pct || 0;
+  const used = groupUsed(g);
+  const scale = Math.max(share, used) || 1;
+  const segs = groupRoots(g)
+    .sort(byGroupThenAge)
+    .map((r) => ({ r, v: computerPoints(r) }))
+    .filter((s) => s.v > 0.05);
+  const fill = segs.map((s) => `<span class="sbar-seg" style="flex:${s.v} 1 0;--c:${colorFor(s.r.id)}"></span>`).join("");
+  return `<div class="sbar ${cls}" data-state="${limitState(used, share)}" role="img" aria-label="${esc(`${g.label}: ${about()}${pts(used)} of its ${pts(share)} share used`)}">
+      <div class="sbar-fill" style="width:${(Math.min(used, scale) / scale) * 100}%">${fill}</div>
+      ${used > share ? `<span class="sbar-mark" style="left:${(share / scale) * 100}%"></span>` : ""}
+    </div>`;
+}
+
+/** Shares handed out to groups, against the whole limit and the account budget. */
+function sharesTotalNote() {
+  const total = groups().reduce((s, g) => s + (g.budget_pct || 0), 0);
+  const budget = account().budget_pct ?? 100;
+  if (total > 100.05) return { warn: true, text: `Together ${pts(total)}, more than the whole weekly limit` };
+  if (total > budget + 0.05) return { warn: true, text: `Together ${pts(total)}, more than your ${pts(budget)} budget` };
+  return { warn: false, text: `Together ${pts(total)} of the weekly limit` };
+}
+
+function sharesHtml() {
+  const list = groups();
+  if (!list.length) return "";
+  const total = sharesTotalNote();
+  const rows = list
+    .map((g) => {
+      const used = groupUsed(g);
+      return `<li><a class="share-row" href="#group-${esc(g.id)}">
+          <span class="share-name">${icon("layers", 16)}<span>${esc(g.label)}</span></span>
+          ${shareBarHtml(g, "sbar-sm")}
+          <span class="share-val num">${isEstimate() ? "~" : ""}${pts(used)} <span class="muted">of ${pts(g.budget_pct)}</span></span>
+        </a></li>`;
+    })
+    .join("");
+  return `
+    <div class="shares">
+      <p class="shares-title small"><strong>Group shares</strong><span class="${total.warn ? "warn-text" : "muted"}">${esc(total.text)}</span></p>
+      <ul class="share-list">${rows}</ul>
+    </div>`;
 }
 
 /* ---------- alerts ---------- */
@@ -415,20 +492,194 @@ function devicesSectionHtml() {
   const list = devices();
   const active = list.filter((d) => !d.removed_at && d.enforcement !== "removed");
   const unverified = active.filter((d) => d.enforcement === "unverified");
-  const order = (d) => (d.removed_at ? 2 : d.enforcement === "unverified" ? 1 : 0);
-  const sorted = roots().sort((a, b) => order(a) - order(b) || new Date(a.created_at) - new Date(b.created_at));
   const count = active.length === 1 ? "1 connected" : `${active.length} connected`;
+  const loose = sortedCards(roots().filter((r) => !groupById(r.group_id)));
+  const newGroup = ui.editingGroup === "new" && isAdmin();
   return `
     <section class="devices-sec" aria-labelledby="devices-title">
       <div class="section-head">
         <h2 id="devices-title">Devices</h2>
-        <span class="muted">${list.length ? count : ""}</span>
+        <span class="section-tools">
+          <span class="muted">${list.length ? count : ""}</span>
+          ${isAdmin() && list.length && !newGroup ? `<button class="btn btn-sm" data-action="new-group">${icon("layers", 16)}<span>New group</span></button>` : ""}
+        </span>
       </div>
       ${unverified.length
         ? `<div class="notice notice-warn unverified-note">${icon("shield", 18)}<p><strong>${unverified.length === 1 ? "1 device" : `${unverified.length} devices`} can't be verified right now.</strong> clare can only confirm the budget holds on devices that are online and healthy.</p></div>`
         : ""}
-      ${list.length ? `<ul class="device-list">${sorted.map(deviceCardHtml).join("")}</ul>` : emptyDevicesHtml()}
+      ${newGroup ? `<section class="group group-new" aria-label="New group">${groupEditorHtml(null)}</section>` : ""}
+      ${!list.length
+        ? emptyDevicesHtml()
+        : groups().length
+          ? `<div class="group-list">${groups().map(groupHtml).join("")}</div>
+             ${loose.length ? `<h3 class="loose-head">Not in a group</h3><ul class="device-list">${loose.map(deviceCardHtml).join("")}</ul>` : ""}`
+          : `<ul class="device-list">${loose.map(deviceCardHtml).join("")}</ul>`}
     </section>`;
+}
+
+/** Cards that need attention first, removed last, then oldest first. */
+function sortedCards(list) {
+  const order = (d) => (d.removed_at ? 2 : d.enforcement === "unverified" ? 1 : 0);
+  return list.sort((a, b) => order(a) - order(b) || new Date(a.created_at) - new Date(b.created_at));
+}
+
+/* ---------- groups ---------- */
+
+function groupHtml(g) {
+  const members = sortedCards(groupRoots(g));
+  const active = members.filter((m) => !isGone(m));
+  const share = g.budget_pct || 0;
+  const used = groupUsed(g);
+  const state = limitState(used, share);
+  const [chipCls, chipText] = GROUP_CHIP[state];
+  const left = share - used;
+  const caps = active.filter((m) => m.budget_pct > 0).reduce((s, m) => s + m.budget_pct, 0);
+  const editing = ui.editingGroup === g.id && isAdmin();
+  const n = active.length;
+  return `
+    <section class="group" id="group-${esc(g.id)}" aria-labelledby="group-title-${esc(g.id)}">
+      <div class="group-head">
+        <span class="group-icon" aria-hidden="true">${icon("layers", 20)}</span>
+        <div class="group-id">
+          <h3 id="group-title-${esc(g.id)}">${esc(g.label)}</h3>
+          <p class="group-sub">${n === 1 ? "1 computer" : `${n} computers`} · share <strong class="num">${pts(share)}</strong> of the weekly limit</p>
+        </div>
+        <span class="chip ${chipCls}">${chipText}</span>
+      </div>
+      <div class="group-usage">
+        <div class="group-figures">
+          <p class="usage-line"><span class="usage-pct num">${isEstimate() ? "~" : ""}${pts(used)}</span>
+            <span class="muted">of its ${pts(share)} share used</span></p>
+          <p class="group-left small ${left > 0 ? "muted" : "bad-text"}">${left > 0.05 ? `${about()}${pts(left)} left` : state === "over" ? "Over its share" : "Nothing left this week"}</p>
+        </div>
+        ${shareBarHtml(g)}
+      </div>
+      ${caps > share + 0.05
+        ? `<p class="group-why">The caps on its computers add up to ${pts(caps)}, more than the group's ${pts(share)} share. The share runs out first.</p>`
+        : ""}
+      ${isAdmin() && !editing
+        ? `<div class="group-actions"><button class="btn btn-sm" data-action="edit-group" data-id="${esc(g.id)}">${icon("edit", 16)}<span>Edit group</span></button></div>`
+        : ""}
+      ${editing ? groupEditorHtml(g) : ""}
+      ${members.length
+        ? `<ul class="device-list">${members.map(deviceCardHtml).join("")}</ul>`
+        : `<p class="group-empty muted small">No computers in this group yet. Pick it under <strong>Edit</strong> on a computer, or when you add a device.</p>`}
+    </section>`;
+}
+
+/** Inline editor for a group; g is null for a new one. */
+function groupEditorHtml(g) {
+  const id = g ? g.id : "new";
+  const others = groups().filter((x) => x !== g).reduce((s, x) => s + (x.budget_pct || 0), 0);
+  // A new group starts with what's left of the budget (up to half), or a quarter when nothing is.
+  const free = Math.round((account().budget_pct ?? 100) - others);
+  const share = g ? Math.round(g.budget_pct) : free >= 5 ? Math.min(50, free) : 25;
+  const computers = sortedCards(roots().filter((r) => !isGone(r)));
+  return `
+    <form class="editor group-editor" data-group-editor="${esc(id)}">
+      ${g ? "" : `<div class="group-editor-intro">
+          <h3>New group</h3>
+          <p class="muted small">Computers in a group share part of the weekly limit. Each computer's own cap still applies inside it.</p>
+        </div>`}
+      <div class="field">
+        <label class="field-label" for="gname-${esc(id)}">Name</label>
+        <input class="input" id="gname-${esc(id)}" name="label" maxlength="40" value="${esc(g?.label || "")}" placeholder="For example: Work" autocomplete="off">
+      </div>
+      <div class="field">
+        <div class="editor-row">
+          <label class="field-label" for="gshare-${esc(id)}">Share</label>
+          <output class="editor-value num" id="gshare-out-${esc(id)}" for="gshare-${esc(id)}">${share}%</output>
+        </div>
+        <input class="range" type="range" id="gshare-${esc(id)}" name="share" min="1" max="100" step="1" value="${share}">
+        <div class="range-scale muted small"><span>1%</span><span>100% of the weekly limit</span></div>
+      </div>
+      ${computers.length
+        ? `<fieldset class="field gmembers">
+            <legend class="field-label">Computers</legend>
+            ${computers
+              .map((r) => {
+                const now = groupById(r.group_id);
+                const elsewhere = now && now !== g ? `now in ${now.label}` : "";
+                return `<label class="gmember">
+                  <input type="checkbox" name="member" value="${esc(r.id)}" ${g && r.group_id === g.id ? "checked" : ""}>
+                  <span class="swatch" style="--c:${colorFor(r.id)}" aria-hidden="true"></span>
+                  <span class="gmember-name">${esc(deviceLabel(r))}</span>
+                  <span class="gmember-note muted small">${esc([elsewhere, `${pts(computerPoints(r))} this week`].filter(Boolean).join(" · "))}</span>
+                </label>`;
+              })
+              .join("")}
+          </fieldset>`
+        : ""}
+      <p class="editor-preview" data-gpreview></p>
+      <p class="field-error" data-error hidden></p>
+      <div class="editor-foot">
+        ${g ? `<button type="button" class="btn btn-sm btn-ghost btn-danger editor-delete" data-action="delete-group" data-id="${esc(g.id)}">${icon("trash", 16)}<span>Delete group</span></button>` : ""}
+        <button type="button" class="btn btn-sm btn-ghost" data-action="cancel-group">Cancel</button>
+        <button type="submit" class="btn btn-sm btn-primary">${g ? "Save" : "Create group"}</button>
+      </div>
+    </form>`;
+}
+
+function wireGroupEditor(id) {
+  const form = $(`[data-group-editor="${CSS.escape(id)}"]`, app);
+  if (!form) return;
+  const g = groupById(id);
+  const range = form.elements.share;
+  const out = $(`#gshare-out-${CSS.escape(id)}`, form);
+  const preview = $("[data-gpreview]", form);
+  const checked = () => $$('input[name="member"]', form).filter((b) => b.checked).map((b) => byId(b.value)).filter(Boolean);
+  const update = () => {
+    const v = Number(range.value);
+    out.textContent = `${v}%`;
+    range.style.setProperty("--fill", `${((v - 1) / 99) * 100}%`);
+    const picked = checked();
+    const name = form.elements.label.value.trim() || "This group";
+    const used = picked.reduce((s, r) => s + computerPoints(r), 0);
+    const caps = picked.filter((r) => r.budget_pct > 0).reduce((s, r) => s + r.budget_pct, 0);
+    const total = groups().filter((x) => x !== g).reduce((s, x) => s + (x.budget_pct || 0), 0) + v;
+    const budget = account().budget_pct ?? 100;
+    const lines = [];
+    if (!picked.length) {
+      lines.push(`<strong>${esc(name)}</strong> can use up to <strong>${v}%</strong> of the weekly limit. Tick the computers that belong to it.`);
+    } else {
+      const who = picked.length === 1 ? esc(deviceLabel(picked[0])) : `Its ${picked.length} computers`;
+      lines.push(`${who} can use up to <strong>${v}%</strong> of the weekly limit${picked.length > 1 ? " together" : ""}. ${picked.length > 1 ? "They've" : "It has"} used ${pts(used)} so far this week${used >= v ? `, so ${picked.length > 1 ? "they'd" : "it would"} be <strong>${account().enforce === false ? "over the share" : "blocked"}</strong> until the week resets` : ""}.`);
+    }
+    if (caps > v) lines.push(`Their own caps add up to ${pts(caps)}, so the group's ${v}% runs out first.`);
+    if (total > 100) lines.push(`All group shares together would be ${pts(total)}, more than the whole weekly limit, so not every group can use its full share.`);
+    else if (total > budget) lines.push(`All group shares together would be ${pts(total)}, more than your ${pts(budget)} budget, which stops every device first.`);
+    preview.innerHTML = lines.map((l, i) => (i ? `<span class="warn-text">${l}</span>` : l)).join(" ");
+  };
+  range.addEventListener("input", update);
+  form.addEventListener("input", update);
+  update();
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('[type="submit"]');
+    const errBox = $("[data-error]", form);
+    errBox.hidden = true;
+    const label = form.elements.label.value.trim();
+    if (!label) {
+      errBox.textContent = "Give the group a name.";
+      errBox.hidden = false;
+      form.elements.label.focus();
+      return;
+    }
+    const body = { label, budget_pct: Number(range.value), device_ids: checked().map((r) => r.id) };
+    setBusy(btn, true, g ? "Saving…" : "Creating…");
+    try {
+      await api(g ? `/groups/${encodeURIComponent(g.id)}` : "/groups", { method: g ? "PATCH" : "POST", body });
+      ui.editingGroup = null;
+      toast(g ? "Saved." : `${label} was created with ${body.budget_pct}% of the weekly limit.`);
+      await refresh();
+      render();
+    } catch (err) {
+      setBusy(btn, false);
+      errBox.textContent = err.message;
+      errBox.hidden = false;
+    }
+  });
+  (g ? range : form.elements.label).focus();
 }
 
 function partRowHtml(d) {
@@ -456,7 +707,7 @@ function deviceCardHtml(d) {
   // The card's health is its weakest part.
   const worst = members.find((m) => !isGone(m) && m.enforcement === "unverified") || d;
   const c = connectivityLine(d);
-  const u = { ...(d.usage || {}), points: groupPoints(d) };
+  const u = { ...(d.usage || {}), points: computerPoints(d) };
   if (kids.length) {
     const byModel = {};
     for (const m of members) for (const [k, v] of Object.entries(m.usage?.by_model || {})) byModel[k] = (byModel[k] || 0) + v;
@@ -538,6 +789,16 @@ function editorHtml(d) {
             <span class="muted small">A browser on a computer shares that computer's card and cap.</span>
           </div>`
         : ""}
+      ${groups().length
+        ? `<div class="field" data-group-field ${parent ? "hidden" : ""}>
+            <label class="field-label" for="group-${esc(d.id)}">Group</label>
+            <select class="input" id="group-${esc(d.id)}" name="group">
+              <option value="">None</option>
+              ${groups().map((g) => `<option value="${esc(g.id)}" ${d.group_id === g.id ? "selected" : ""}>${esc(g.label)} (share ${esc(pts(g.budget_pct))})</option>`).join("")}
+            </select>
+            <span class="muted small">A group's computers share its part of the weekly limit. A cap below still applies inside it.</span>
+          </div>`
+        : ""}
       <label class="check-row" data-cap-check ${parent ? "hidden" : ""}>
         <input type="checkbox" name="capped" ${has ? "checked" : ""}>
         <span><strong>Cap this device</strong><br>
@@ -573,21 +834,26 @@ function wireEditor(id) {
   const capped = form.elements.capped;
   const row = $(".cap-row", form);
   const parentSel = form.elements.parent;
+  const groupSel = form.elements.group;
   const capCheck = $("[data-cap-check]", form);
+  const groupField = $("[data-group-field]", form);
   const syncParent = () => {
     const linked = !!(parentSel && parentSel.value);
     capCheck.hidden = linked;
+    if (groupField) groupField.hidden = linked;
     row.hidden = linked || !capped.checked;
   };
   parentSel?.addEventListener("change", syncParent);
+  groupSel?.addEventListener("change", () => update());
   const out = $(`#cap-out-${CSS.escape(id)}`);
   const preview = $(`#cap-preview-${CSS.escape(id)}`);
   const update = () => {
     const v = Number(range.value);
     out.textContent = `${v}%`;
     range.style.setProperty("--fill", `${((v - 1) / 99) * 100}%`);
-    const used = rootOf(d) === d ? groupPoints(d) : d.usage?.points || 0;
-    preview.innerHTML = `This device can use up to <strong>${v}%</strong> of the weekly limit. It has used ${pts(used)} so far this week${used >= v ? `, so it would be <strong>${account().enforce === false ? "over its cap" : "blocked"}</strong> until the week resets` : ""}.`;
+    const used = rootOf(d) === d ? computerPoints(d) : d.usage?.points || 0;
+    const g = groupById(groupSel ? groupSel.value : d.group_id);
+    preview.innerHTML = `This device can use up to <strong>${v}%</strong> of the weekly limit${g ? `, within ${esc(g.label)}'s ${pts(g.budget_pct)} share` : ""}. It has used ${pts(used)} so far this week${used >= v ? `, so it would be <strong>${account().enforce === false ? "over its cap" : "blocked"}</strong> until the week resets` : ""}.`;
   };
   range.addEventListener("input", update);
   capped.addEventListener("change", () => {
@@ -608,6 +874,7 @@ function wireEditor(id) {
       admin: form.elements.admin.checked,
     };
     if (parentSel) body.parent_id = parentSel.value || null;
+    if (groupSel && !linked) body.group_id = groupSel.value || null;
     setBusy(btn, true, "Saving…");
     try {
       await api(`/devices/${encodeURIComponent(id)}`, { method: "PATCH", body });
@@ -856,7 +1123,24 @@ document.addEventListener("click", async (e) => {
       break;
     case "edit":
       ui.editing = ui.editing === id ? null : id;
+      ui.editingGroup = null;
       render();
+      break;
+    case "new-group":
+    case "edit-group":
+      ui.editingGroup = action === "new-group" ? "new" : id;
+      ui.editing = null;
+      render();
+      break;
+    case "cancel-group": {
+      const was = ui.editingGroup;
+      ui.editingGroup = null;
+      render();
+      $(was === "new" ? '[data-action="new-group"]' : `[data-action="edit-group"][data-id="${CSS.escape(was || "")}"]`)?.focus();
+      break;
+    }
+    case "delete-group":
+      openDeleteGroupDialog(groupById(id));
       break;
     case "cancel-edit": {
       const was = ui.editing;
@@ -893,7 +1177,7 @@ async function dismissAlert(id, btn) {
 
 const addDialog = $("#add-dialog");
 
-async function openAddDialog(admin = false) {
+async function openAddDialog(admin = false, groupId = null) {
   addDialog.innerHTML = `
     <div class="sheet-head">
       <div>
@@ -905,7 +1189,7 @@ async function openAddDialog(admin = false) {
     <div class="sheet-body"><div class="skel" style="height:3.4rem;border-radius:14px"></div></div>`;
   addDialog.showModal();
   try {
-    const res = await api("/enroll-code", { method: "POST", body: { admin } });
+    const res = await api("/enroll-code", { method: "POST", body: { admin, group_id: groupId } });
     showAddResult(res);
   } catch (err) {
     addDialog.innerHTML = `
@@ -918,11 +1202,11 @@ async function openAddDialog(admin = false) {
         <form method="dialog"><button class="btn btn-ghost">Close</button></form>
         <button class="btn btn-primary" id="add-retry">${icon("refresh", 18)}<span>Try again</span></button>
       </div>`;
-    $("#add-retry", addDialog).addEventListener("click", () => openAddDialog(admin));
+    $("#add-retry", addDialog).addEventListener("click", () => openAddDialog(admin, groupId));
   }
 }
 
-function showAddResult({ code, admin, expires_at }) {
+function showAddResult({ code, admin, group_id, expires_at }) {
   const url = enrollUrl(code);
   addDialog.innerHTML = `
     <div class="sheet-head">
@@ -940,23 +1224,42 @@ function showAddResult({ code, admin, expires_at }) {
         <span><strong>Admin device</strong><br>
         <span class="muted small">Devices added with this link can change the budget, caps and settings. Leave it off for servers and shared machines; you can change it later on the device.</span></span>
       </label>
+      ${groups().length
+        ? `<div class="field">
+            <label class="field-label" for="add-group">Group</label>
+            <select class="input" id="add-group">
+              <option value="">None</option>
+              ${groups().map((g) => `<option value="${esc(g.id)}" ${group_id === g.id ? "selected" : ""}>${esc(g.label)} (share ${esc(pts(g.budget_pct))})</option>`).join("")}
+            </select>
+            <span class="muted small">Computers added with this link join this group. You can move them later.</span>
+          </div>`
+        : ""}
     </div>
     <div class="sheet-foot">
       <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${icon("external", 18)}<span>Add this computer</span></a>
       <form method="dialog"><button class="btn btn-primary">Done</button></form>
     </div>`;
   bindCopy($("#copy-enroll", addDialog), () => url);
-  $("#add-admin", addDialog).addEventListener("change", async (e) => {
-    const box = e.currentTarget;
-    box.disabled = true;
+  // A new link for the new choices; the old one keeps working until it expires.
+  const remint = async (el, focusSel, undo) => {
+    el.disabled = true;
     try {
-      showAddResult(await api("/enroll-code", { method: "POST", body: { admin: box.checked } }));
-      $("#add-admin", addDialog).focus();
+      const body = { admin: $("#add-admin", addDialog).checked, group_id: $("#add-group", addDialog)?.value || null };
+      showAddResult(await api("/enroll-code", { method: "POST", body }));
+      $(focusSel, addDialog).focus();
     } catch (err) {
-      box.checked = !box.checked;
-      box.disabled = false;
+      undo();
+      el.disabled = false;
       toast(err.message, { tone: "bad" });
     }
+  };
+  $("#add-admin", addDialog).addEventListener("change", (e) => {
+    const box = e.currentTarget;
+    remint(box, "#add-admin", () => (box.checked = !box.checked));
+  });
+  $("#add-group", addDialog)?.addEventListener("change", (e) => {
+    const sel = e.currentTarget;
+    remint(sel, "#add-group", () => (sel.value = group_id || ""));
   });
   $("#copy-enroll", addDialog).focus();
 }
@@ -997,6 +1300,44 @@ function openRemoveDialog(d) {
       removeDialog.close();
       if (ui.editing === d.id) ui.editing = null;
       toast(`${name} was removed.`);
+      await refresh();
+      render();
+    } catch (err) {
+      setBusy(btn, false);
+      const box = $("#remove-error", removeDialog);
+      box.textContent = err.message;
+      box.hidden = false;
+    }
+  });
+  removeDialog.showModal();
+  $(".btn-ghost", removeDialog).focus();
+}
+
+function openDeleteGroupDialog(g) {
+  if (!g) return;
+  const members = groupRoots(g).filter((r) => !isGone(r));
+  removeDialog.innerHTML = `
+    <div class="sheet-head">
+      <h2 id="remove-title">Delete the group ${esc(g.label)}?</h2>
+    </div>
+    <div class="sheet-body">
+      <p>${members.length
+        ? `${members.map((r) => `<strong>${esc(deviceLabel(r))}</strong>`).join(members.length === 2 ? " and " : ", ")} stay${members.length === 1 ? "s" : ""} connected and keep${members.length === 1 ? "s its" : " their"} own cap${members.length === 1 ? "" : "s"}. ${members.length === 1 ? "It's" : "They're"} just no longer held to the group's ${pts(g.budget_pct)} share.`
+        : "It has no computers in it."}</p>
+      <p class="field-error" id="remove-error" hidden></p>
+    </div>
+    <div class="sheet-foot">
+      <form method="dialog"><button class="btn btn-ghost">Cancel</button></form>
+      <button class="btn btn-danger-solid" id="remove-confirm">${icon("trash", 18)}<span>Delete group</span></button>
+    </div>`;
+  $("#remove-confirm", removeDialog).addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    setBusy(btn, true, "Deleting…");
+    try {
+      await api(`/groups/${encodeURIComponent(g.id)}`, { method: "DELETE" });
+      removeDialog.close();
+      ui.editingGroup = null;
+      toast(`${g.label} was deleted.`);
       await refresh();
       render();
     } catch (err) {

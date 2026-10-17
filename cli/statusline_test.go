@@ -133,6 +133,13 @@ func TestStatusLineText(t *testing.T) {
 	if got := ta.statusLineText(); got != "clare · this device's weekly budget used up" {
 		t.Fatalf("blocked device: %q", got)
 	}
+	st = okStatus(30)
+	st.Scope = "group"
+	st.Group = &GroupUse{ID: "g1", Label: "pranav", Used: 15, Budget: 50, Pct: 30}
+	cacheStatus(t, ta, st)
+	if got := ta.statusLineText(); got != "clare · 30% of the pranav group's weekly share" {
+		t.Fatalf("group: %q", got)
+	}
 	ta.clock = ta.clock.Add(80 * time.Hour)
 	if got := ta.statusLineText(); got != "" {
 		t.Fatalf("last week's numbers must not show, got %q", got)
@@ -170,4 +177,17 @@ func TestParseRateLimitsIsLenient(t *testing.T) {
 func jsonNum(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestGroupPhrase(t *testing.T) {
+	for label, want := range map[string]string{
+		"pranav":       "the pranav group",
+		" Work group ": "the Work group",
+		"Grouping":     "the Grouping group",
+		"":             "the group",
+	} {
+		if got := groupPhrase(label); got != want {
+			t.Errorf("groupPhrase(%q) = %q, want %q", label, got, want)
+		}
+	}
 }

@@ -66,6 +66,10 @@ Source files use placeholders replaced by `scripts/build.mjs` (and by the dev se
   `enforce` (block vs. monitor only), `strict_hooks`, the latest official meter reading.
 - **Devices**: `cli` (Claude Code on a computer), `extension` (a Chrome profile), `web` (a signed-in dashboard
   session, never listed or metered). All belong to the owner.
+- **Groups** (`clare_groups`): computers grouped under a name, each group with a **share** of the weekly limit that
+  its computers split. Only a computer (or a browser on its own) has a `group_id`; a browser on a computer
+  (`parent_id`) goes with the computer's group. One level, at most 20. Deleting a group only takes its computers out
+  of it. Re-enrolling a machine keeps its group; an enroll code minted with `group_id` puts new computers in it.
 - **Admin devices**: only devices with `admin` on can change things: settings, budget, caps, adding (minting
   enroll codes) and removing devices, dismissing alerts. Everything else gets `403 admin_only`. Other devices
   report usage, check the budget, remove themselves (`clare uninstall`) and open a **view-only** dashboard.
@@ -90,6 +94,10 @@ Source files use placeholders replaced by `scripts/build.mjs` (and by the dev se
 - `warn_pct` (account, 10–99, default 80): warn when usage reaches this % *of the budget*.
 - Device cap `budget_pct` (per device, optional, 0.5–100 points): this device may use at most this many points per
   week, whatever the account total is.
+- Group share `budget_pct` (per group, 1–100 points): the group's computers together, browsers included, may use at
+  most this many points per week. A group's usage counts its computers (removed ones too: their week still counts)
+  and the browsers on the connected ones. A computer stops at the first of its own cap, its group's share, and the
+  account budget. Shares and caps may add up to more than the budget; the dashboard warns and the server allows it.
 - `enforce` (default on): off = monitor only. Nothing is ever blocked; over-budget shows as state `over`.
 
 ## Metering: the official meter decides *how much*, activity decides *which device*
@@ -169,11 +177,13 @@ uses the learned cli rate instead of `100 / capacity`. `/me` reports it as `acco
   "allowed": true,                 // false only when state is "blocked"
   "state": "ok",                   // "ok" | "warn" | "over" (over budget, enforcement off) | "blocked"
   "basis": "meter",                // "meter" | "estimate"
-  "scope": "account",              // which budget used/limit/pct describe: "account" | "device"
+  "scope": "account",              // which limit used/limit/pct describe: "account" | "group" | "device"
   "used": 41.6,                    // points
   "limit": 90,                     // points
   "pct": 46.2,                     // used / limit × 100, can exceed 100
   "account": { "used": 41.6, "budget": 90, "pct": 46.2 },
+  "group": { "id": "uuid", "label": "pranav", "used": 30.4, "budget": 50, "pct": 60.8 },
+                                   // null outside a group
   "device": { "id": "uuid", "label": "MacBook Air", "used": 12.3, "budget": 30, "pct": 41 },
                                    // null for dashboard sessions; budget and pct are null without a device cap
   "resets_at": "2026-10-19T16:00:00.000Z",
@@ -184,17 +194,19 @@ uses the learned cli rate instead of `100 / capacity`. `/me` reports it as `acco
 }
 ```
 
-`scope` is whichever of account / device cap has the higher `pct` (account on ties or without a cap).
+`scope` is whichever of account / group share / device cap has the highest `pct` (the broader one on ties).
 State: `pct ≥ 100` → `blocked` (or `over` when `enforce` is off); `pct ≥ warn_pct` → `warn`; else `ok`.
 Clients send `X-Clare-TZ: <IANA tz>` so times in messages are local. Copy, with `<budget>` = "this week's Claude
-budget" (account scope) or "<label>'s weekly budget" (device scope), "about" inserted on estimate basis:
+budget" (account scope), "<label>'s weekly budget" (device scope) or "the <group> group's weekly share" (group
+scope; "the Work group" when the name already ends in "group"), "about" inserted on estimate basis:
 
 - ok: `You've used 46% of this week's Claude budget.`
 - warn: `Heads up: you've used 85% of this week's Claude budget. It resets on Monday at 9:30 PM.`
 - blocked: `You've used all of this week's Claude budget. It resets on Monday at 9:30 PM. You can change the budget in the clare dashboard.`
   Device scope: `MacBook Air has used all of its weekly budget. It resets on Monday at 9:30 PM. You can change it in the clare dashboard.`
+  Group scope: `The joy group has used all of its weekly share. It resets on Monday at 9:30 PM. You can change it in the clare dashboard.`
 - over: `You're over this week's Claude budget (monitor only, nothing is blocked). It resets on Monday at 9:30 PM.`
-- titles: `46% used` (ok, warn), `Budget used up` (blocked), `Over budget` (over).
+- titles: `46% used` (ok, warn), `Budget used up` / `Share used up` (blocked), `Over budget` / `Over share` (over).
 
 ## Enforcement and the cached-policy strategy
 
@@ -260,10 +272,13 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
 | `POST /heartbeat` | `{ info: {...}, health: { ok, problems: [string] } }` | `{ status, settings: { enforce, strict_hooks }, alerts: [{ id, kind, message, created_at }] }` |
 | `POST /device/remove` | `{ reason }` | `{ ok }` — the device removes itself (`clare uninstall`). |
 | `POST /login-link` | `{}` | `{ code, expires_at }` → open `webUrl/dash.html#login=<code>` (admin only if the caller is) |
-| `POST /enroll-code` | `{ admin?: boolean, kind?: "cli" \| "extension" }` | `{ code, admin, kind, expires_at }` → `webUrl/enroll.html#<code>` · **admin**, except `kind: "extension"` (1 h, admin only if the caller is). `POST /enroll` with the wrong kind → `403 wrong_kind`. |
+| `POST /enroll-code` | `{ admin?: boolean, kind?: "cli" \| "extension", group_id? }` | `{ code, admin, kind, group_id, expires_at }` → `webUrl/enroll.html#<code>` · **admin**, except `kind: "extension"` (1 h, admin only if the caller is). `POST /enroll` with the wrong kind → `403 wrong_kind`. |
 | `GET /me` | – | dashboard payload (below) |
-| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null, admin?: boolean }` | `{ ok }` · **admin** |
+| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null, admin?: boolean, parent_id?: id \| null, group_id?: id \| null }` | `{ ok }` · **admin**. A browser given a computer leaves its own group. `400 bad_group` for a group that's gone. |
 | `DELETE /devices/:id` | – | `{ ok }` — revoke; the device gets `410` next time. · **admin** |
+| `POST /groups` | `{ label, budget_pct, device_ids?: [id] }` | `{ id }` · **admin**. `device_ids` sets exactly which connected computers are in it. |
+| `PATCH /groups/:id` | `{ label?, budget_pct?, device_ids?: [id] }` | `{ id }` · **admin** |
+| `DELETE /groups/:id` | – | `{ ok }` — its computers just leave the group. · **admin** |
 | `POST /alerts/:id/resolve` | – | `{ ok }` · **admin** |
 | `PATCH /settings` | `{ account_name?, owner_name?, plan?, capacity_manual?, budget_pct?, warn_pct?, enforce?, strict_hooks? }` | `{ ok }` · **admin** |
 
@@ -287,11 +302,12 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
     "pending": 0.6
   },
   "status": { /* status for the caller; device = null for dashboards */ },
+  "groups": [ { "id": "…", "label": "pranav", "budget_pct": 50, "created_at": "…" } ],   // oldest first
   "devices": [             // active first, then removed in the last 14 days; never web, never replaced
     { "id": "…", "kind": "cli", "label": "MacBook Air", "os": "macOS", "browser": null,
       "connectivity": "online", "enforcement": "active", "problem": null,
       "last_seen_at": "…", "created_at": "…", "removed_at": null,
-      "admin": true, "budget_pct": 30,
+      "admin": true, "budget_pct": 30, "parent_id": null, "group_id": "…",
       "usage": { "points": 12.3, "credits": 18.2, "by_model": { "opus": 15.1, "sonnet": 3.1 } } }
   ],
   "alerts": [ { "id": 1, "kind": "device_offline", "message": "…", "created_at": "…", "device_id": "…", "device_label": "…" } ],
@@ -372,8 +388,9 @@ without the bundled extension points at the enroll page's download instead.
   canonical shape; holds Send (Enter/click intercept + fetch backstop) per the cached-policy strategy, with a banner.
 - Heartbeat every 5 min (`chrome.alarms`). `chrome.runtime.setUninstallURL(webUrl/bye.html#d=<id>&s=<secret>)`.
 - Notifications: when this browser's status turns `warn` or `blocked`, and for alerts returned by heartbeats.
-- Popup: a ring with "% of weekly budget used", "resets Monday 9:30 PM", basis (official meter / estimate), this
-  device's cap if set, connection state, "Open dashboard".
+- Popup: a ring with "% of weekly budget used" (or "of the pranav group's weekly share" when that's what binds),
+  "resets Monday 9:30 PM", basis (official meter / estimate), this device's cap if set, connection state,
+  "Open dashboard".
 
 ## Web (`web/`, static, no framework)
 
@@ -381,8 +398,9 @@ without the bundled extension points at the enroll page's download instead.
   with Copy; "Add to Chrome" (Web Store when `extensionUrl` is set, else the zip with load-unpacked steps); live ticks
   as devices enroll.
 - `dash.html` — overview (official meter, budget bar, basis, reset time, 5-hour window, unobserved and before-clare
-  points), devices (connectivity, enforcement, usage, cap, admin, rename, remove), "Add a device" (mints an enroll
-  link, optionally for admin devices), alerts, last-14-days chart by device, settings (names, plan, budget, warn
+  points, group shares), devices (connectivity, enforcement, usage, cap, admin, group, rename, remove) laid out by
+  group with each group's share bar and an editor (name, share, computers, delete), "Add a device" (mints an enroll
+  link, optionally for admin devices and into a group), alerts, last-14-days chart by device, settings (names, plan, budget, warn
   level, enforce, strict hooks, capacity). Non-admin sessions see the same data, view-only.
 - `bye.html#d=…&s=…` — "clare was removed from this browser" + pings `/bye`.
 - `index.html` — what clare is, link to the dashboard.

@@ -8,6 +8,7 @@ import {
   credits,
   enforcement,
   evaluate,
+  groupPhrase,
   learnedRate,
   learnRates,
   modelFamily,
@@ -272,6 +273,43 @@ test("status: a device cap binds when it's tighter", () => {
   const loose = evaluate({ ...statusBase, device: { id: "d1", label: "MacBook Air", used: 2, budget: 50 } });
   assert.equal(loose.scope, "account");
   assert.equal(loose.device!.pct, 4);
+});
+
+test("status: a group's share binds when it's the closest to running out", () => {
+  const joy = { id: "g2", label: "joy", used: 50, budget: 50 };
+  const s = evaluate({ ...statusBase, group: joy });
+  assert.equal(s.scope, "group");
+  assert.equal(s.state, "blocked");
+  assert.equal(s.limit, 50);
+  assert.equal(s.title, "Share used up");
+  assert.deepEqual(s.group, { id: "g2", label: "joy", used: 50, budget: 50, pct: 100 });
+  assert.equal(s.message,
+    "The joy group has used all of its weekly share. It resets on Monday at 9:30 PM. You can change it in the clare dashboard.");
+
+  const warn = evaluate({ ...statusBase, group: { ...joy, used: 42 } });
+  assert.equal(warn.scope, "group");
+  assert.equal(warn.message, "Heads up: the joy group has used 84% of its weekly share. It resets on Monday at 9:30 PM.");
+
+  const over = evaluate({ ...statusBase, account: { ...statusBase.account, enforce: false }, group: { ...joy, used: 55 } });
+  assert.equal(over.title, "Over share");
+  assert.equal(over.message, "The joy group is over its weekly share (monitor only, nothing is blocked). It resets on Monday at 9:30 PM.");
+
+  // The device's own cap is tighter still.
+  const capped = evaluate({ ...statusBase, group: { ...joy, used: 30 }, device: { id: "d3", label: "joy's PC", used: 10, budget: 10 } });
+  assert.equal(capped.scope, "device");
+  assert.equal(capped.group!.pct, 60);
+
+  // A roomy share leaves the account budget in charge.
+  const roomy = evaluate({ ...statusBase, account: { ...statusBase.account, used: 80 }, group: { ...joy, used: 10 } });
+  assert.equal(roomy.scope, "account");
+  assert.equal(roomy.state, "warn");
+  assert.equal(evaluate(statusBase).group, null);
+});
+
+test("group phrases", () => {
+  assert.equal(groupPhrase("pranav"), "the pranav group");
+  assert.equal(groupPhrase(" Work group "), "the Work group");
+  assert.equal(groupPhrase("Grouping"), "the Grouping group");
 });
 
 test("status: dashboards have no device, estimates say about", () => {

@@ -75,13 +75,19 @@ func (a *App) runStatus() int {
 		about = "about "
 	}
 	whose := "of your budget"
-	if st.Scope == "device" {
+	switch {
+	case st.Scope == "device":
 		whose = "of this device's budget"
+	case st.Scope == "group" && st.Group != nil:
+		whose = "of " + groupPhrase(st.Group.Label) + "'s share"
 	}
 
 	const row = "  %-12s %s"
 	u.line(row+"  %s", "This week", paint(bar(st.Pct, 20)), paint(fmt.Sprintf("%s%.0f%% %s", about, st.Pct, whose)))
 	u.line(row, "Account", fmt.Sprintf("%s%s of the weekly limit used · budget %s", about, fmtPct(st.Account.Used), fmtPct(st.Account.Budget)))
+	if g := st.Group; g != nil {
+		u.line(row, "Group", fmt.Sprintf("%s · %s%s of its %s share", g.Label, about, fmtPct(g.Used), fmtPct(g.Budget)))
+	}
 	if d := st.Device; d != nil {
 		line := fmt.Sprintf("%s%s of the weekly limit", about, fmtPct(d.Used))
 		if d.Budget != nil {

@@ -137,8 +137,11 @@ func (a *App) statusLineText() string {
 		return "" // last week's numbers
 	}
 	whose := "weekly budget"
-	if st.Scope == "device" {
+	switch {
+	case st.Scope == "device":
 		whose = "this device's weekly budget"
+	case st.Scope == "group" && st.Group != nil:
+		whose = groupPhrase(st.Group.Label) + "'s weekly share"
 	}
 	if st.State == "blocked" {
 		return "clare · " + whose + " used up"

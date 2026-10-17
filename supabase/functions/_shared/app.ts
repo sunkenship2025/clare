@@ -106,6 +106,7 @@ interface DeviceRow {
   admin: boolean;
   budget_pct: number | null;
   parent_id: string | null;
+  group_id: string | null;
   problem: string | null;
   last_seen_at: Date | null;
   offline_alerted_at: Date | null;
@@ -113,6 +114,13 @@ interface DeviceRow {
   created_at: Date;
   removed_at: Date | null;
   removed_reason: string | null;
+}
+
+interface GroupRow {
+  id: string;
+  label: string;
+  budget_pct: number;
+  created_at: Date;
 }
 
 interface Ctx {
@@ -145,6 +153,10 @@ function toSettings(r: Record<string, unknown>): SettingsRow {
 
 function toDevice(r: Record<string, unknown>): DeviceRow {
   return { ...(r as unknown as DeviceRow), budget_pct: num(r.budget_pct), alerts_seen_id: Number(r.alerts_seen_id ?? 0) };
+}
+
+function toGroup(r: Record<string, unknown>): GroupRow {
+  return { ...(r as unknown as GroupRow), budget_pct: Number(r.budget_pct) };
 }
 
 // ── Crypto helpers ───────────────────────────────────────────
@@ -213,6 +225,15 @@ function points(v: unknown, what: string): number {
   return Math.round(n * 100) / 100;
 }
 
+/** A group id from a request: null to leave a group, or an existing group's id. */
+async function groupRef(ctx: Ctx, v: unknown): Promise<string | null> {
+  if (v === null || v === undefined || v === "") return null;
+  const id = str(v, 40);
+  const [g] = /^[0-9a-f-]{36}$/i.test(id) ? await ctx.sql`select id from clare_groups where id = ${id}` : [];
+  if (!g) throw fail(400, "bad_group", "That group is gone. Reload the dashboard and try again.");
+  return id;
+}
+
 /** Changing settings, caps or devices needs an admin device (or a dashboard opened from one). */
 function requireAdmin(ctx: Authed) {
   if (!ctx.device.admin) {
@@ -264,17 +285,40 @@ async function computerOf(ctx: Ctx, device: DeviceRow): Promise<{ root: DeviceRo
   return { root, members: [root.id, ...children.map((c) => c.id)] };
 }
 
+/**
+ * The devices whose usage counts toward a group: its computers (removed ones too, their week still
+ * counts) and the browsers on the ones still connected. Matches what the dashboard adds up.
+ */
+async function groupMembers(ctx: Ctx, groupId: string): Promise<string[]> {
+  const rows = await ctx.sql<{ id: string }[]>`
+    select id from clare_devices where group_id = ${groupId} and kind <> 'web'
+    union
+    select c.id from clare_devices c join clare_devices p on p.id = c.parent_id
+    where p.group_id = ${groupId} and p.removed_at is null`;
+  return rows.map((r) => r.id);
+}
+
 async function statusFor(ctx: Ctx, device: DeviceRow | null): Promise<Status> {
   const w = await week(ctx);
   const s = ctx.settings;
   const metered = device && device.kind !== "web" ? await computerOf(ctx, device) : null;
+  const pointsOf = (ids: string[]) => ids.reduce((sum, id) => sum + (w.devices.get(id)?.points ?? 0), 0);
+  let group: { id: string; label: string; used: number; budget: number } | null = null;
+  if (metered?.root.group_id) {
+    const [g] = await ctx.sql`select * from clare_groups where id = ${metered.root.group_id}`;
+    if (g) {
+      const row = toGroup(g);
+      group = { id: row.id, label: row.label, used: pointsOf(await groupMembers(ctx, row.id)), budget: row.budget_pct };
+    }
+  }
   return evaluate({
     account: { used: w.used, budget: s.budget_pct, warn_pct: s.warn_pct, enforce: s.enforce, strict_hooks: s.strict_hooks },
+    group,
     device: metered
       ? {
         id: metered.root.id,
         label: deviceName(metered.root),
-        used: metered.members.reduce((sum, id) => sum + (w.devices.get(id)?.points ?? 0), 0),
+        used: pointsOf(metered.members),
         budget: metered.root.budget_pct,
       }
       : null,
@@ -439,10 +483,24 @@ async function recover(ctx: Ctx, secret: string | undefined, b: Record<string, u
 async function findEnrollCode(ctx: Ctx, code: string) {
   const hash = await sha256(code.trim().toLowerCase());
   const [row] = await ctx.sql<
-    { code_hash: string; admin: boolean; kind: "cli" | "extension" | null; parent_id: string | null; expires_at: Date }[]
-  >`select code_hash, admin, kind, parent_id, expires_at from clare_enroll_codes where code_hash = ${hash}`;
+    {
+      code_hash: string;
+      admin: boolean;
+      kind: "cli" | "extension" | null;
+      parent_id: string | null;
+      group_id: string | null;
+      expires_at: Date;
+    }[]
+  >`select code_hash, admin, kind, parent_id, group_id, expires_at from clare_enroll_codes where code_hash = ${hash}`;
   if (!row) throw fail(404, "invalid_code", "This link isn't valid. Make a new one in the clare dashboard (Add a device).");
-  return { hash, admin: row.admin, kind: row.kind, parent_id: row.parent_id, expired: new Date(row.expires_at) <= ctx.now };
+  return {
+    hash,
+    admin: row.admin,
+    kind: row.kind,
+    parent_id: row.parent_id,
+    group_id: row.group_id,
+    expired: new Date(row.expires_at) <= ctx.now,
+  };
 }
 
 async function enrollInfo(ctx: Ctx, code: string) {
@@ -475,7 +533,7 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
   const bye = randomToken("bye_");
 
   const { id, replaced } = await ctx.sql.begin(async (tx) => {
-    // Re-enrolling the same machine replaces its old device and keeps its history and cap.
+    // Re-enrolling the same machine replaces its old device and keeps its history, cap and group.
     const old = machineId
       ? (await tx`update clare_devices set removed_at = ${ctx.now}, removed_reason = 'replaced'
                   where kind = ${kind} and machine_id = ${machineId} and removed_at is null
@@ -495,11 +553,14 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
         }
       }
     }
+    // The link's group wins (the code's group_id is cleared if that group was deleted); a browser
+    // on a computer goes with the computer's group instead.
+    const group = parent ? null : c.group_id ?? old.find((d) => d.group_id)?.group_id ?? null;
     const [d] = await tx<{ id: string }[]>`
       insert into clare_devices (kind, label, info, machine_id, token_hash, bye_hash, enroll_code_hash, admin, budget_pct,
-                                 parent_id, last_seen_at, created_at, alerts_seen_id)
+                                 parent_id, group_id, last_seen_at, created_at, alerts_seen_id)
       values (${kind}, ${label}, ${tx.json(info as postgres.JSONValue)}, ${machineId}, ${await sha256(token)},
-              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${parent}, ${ctx.now}, ${ctx.now},
+              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${parent}, ${group}, ${ctx.now}, ${ctx.now},
               (select coalesce(max(id), 0) from clare_alerts))
       returning id`;
     if (old.length) {
@@ -674,9 +735,11 @@ async function enrollCode(ctx: Authed, b: Record<string, unknown>) {
   const expires = new Date(ctx.now.getTime() + (kind === "extension" ? BROWSER_CODE_TTL_MS : ENROLL_TTL_MS));
   await ctx.sql`delete from clare_enroll_codes where expires_at < ${new Date(ctx.now.getTime() - 30 * DAY_MS)}`;
   const parent = kind === "extension" && ctx.device.kind === "cli" ? ctx.device.id : null;
-  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, parent_id, created_at, expires_at)
-                values (${await sha256(code)}, ${admin}, ${kind}, ${parent}, ${ctx.now}, ${expires})`;
-  return { code, admin, kind, expires_at: expires };
+  // Only an admin can put the new device in a group.
+  const group = ctx.device.admin && !parent ? await groupRef(ctx, b.group_id) : null;
+  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, parent_id, group_id, created_at, expires_at)
+                values (${await sha256(code)}, ${admin}, ${kind}, ${parent}, ${group}, ${ctx.now}, ${expires})`;
+  return { code, admin, kind, group_id: group, expires_at: expires };
 }
 
 async function me(ctx: Authed) {
@@ -701,6 +764,7 @@ async function me(ctx: Authed) {
     from clare_usage
     where at >= ${new Date(ctx.now.getTime() - 14 * DAY_MS)}
     group by 1, 2 order by 1`;
+  const groups = (await ctx.sql`select * from clare_groups order by created_at, id`).map(toGroup);
   const labels = new Map<string, string>();
   for (const r of await ctx.sql<{ id: string; kind: string; label: string }[]>`
     select id, kind, label from clare_devices where kind <> 'web'`) labels.set(r.id, deviceName(r));
@@ -739,6 +803,7 @@ async function me(ctx: Authed) {
       },
     },
     status: await statusFor(ctx, ctx.device),
+    groups: groups.map((g) => ({ id: g.id, label: g.label, budget_pct: g.budget_pct, created_at: g.created_at })),
     devices: devices.map((d) => {
       const conn = connectivity(d, ctx.now);
       const mine = usage.filter((u) => u.device_id === d.id);
@@ -759,6 +824,7 @@ async function me(ctx: Authed) {
         admin: d.admin,
         budget_pct: d.budget_pct,
         parent_id: d.parent_id,
+        group_id: d.group_id,
         usage: {
           points: w.devices.get(d.id)?.points ?? 0,
           credits: round4(mine.reduce((sum, u) => sum + u.credits, 0)),
@@ -800,8 +866,76 @@ async function patchDevice(ctx: Authed, id: string, b: Record<string, unknown>) 
       if (d.kind !== "extension" || !p) throw fail(400, "bad_parent", "Only a browser can belong to a computer with Claude Code.");
     }
   }
-  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin}, parent_id = ${parent}
+  // A browser on a computer goes with the computer's group, so it has none of its own.
+  const group = parent ? null : b.group_id === undefined ? d.group_id : await groupRef(ctx, b.group_id);
+  await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin}, parent_id = ${parent},
+                  group_id = ${group}
                 where id = ${d.id}`;
+  return { ok: true };
+}
+
+// ── Handlers: groups ─────────────────────────────────────────
+
+const MAX_GROUPS = 20;
+
+/** The computers a request wants in a group: connected, and not a browser on a computer. */
+async function memberIds(ctx: Authed, v: unknown): Promise<string[]> {
+  const raw = Array.isArray(v) ? v.map((x) => str(x, 40)) : null;
+  if (!raw || raw.some((x) => !/^[0-9a-f-]{36}$/i.test(x))) throw fail(400, "bad_members", "Pick the group's computers from the list.");
+  const ids = [...new Set(raw)];
+  const found = ids.length
+    ? await ctx.sql<{ id: string }[]>`
+        select d.id from clare_devices d left join clare_devices p on p.id = d.parent_id and p.removed_at is null
+        where d.id = any(${ids}::uuid[]) and d.kind <> 'web' and d.removed_at is null and p.id is null`
+    : [];
+  if (found.length !== ids.length) throw fail(400, "bad_members", "One of those computers is gone. Reload the dashboard and try again.");
+  return ids;
+}
+
+/** Put exactly these computers in the group. Removed ones stay in it: their week still counts. */
+async function setMembers(ctx: Authed, groupId: string, ids: string[]) {
+  await ctx.sql`update clare_devices set group_id = null
+                where group_id = ${groupId} and removed_at is null and not (id = any(${ids}::uuid[]))`;
+  if (ids.length) await ctx.sql`update clare_devices set group_id = ${groupId} where id = any(${ids}::uuid[])`;
+}
+
+function groupLabel(v: unknown): string {
+  const label = str(v, 40);
+  if (!label) throw fail(400, "bad_label", "A group needs a name.");
+  return label;
+}
+
+async function createGroup(ctx: Authed, b: Record<string, unknown>) {
+  requireAdmin(ctx);
+  const label = groupLabel(b.label);
+  const share = points(b.budget_pct, "A group's share");
+  const [{ n }] = await ctx.sql<{ n: number }[]>`select count(*)::int as n from clare_groups`;
+  if (n >= MAX_GROUPS) throw fail(400, "too_many_groups", `clare keeps at most ${MAX_GROUPS} groups.`);
+  const ids = b.device_ids === undefined ? null : await memberIds(ctx, b.device_ids);
+  const [g] = await ctx.sql<{ id: string }[]>`
+    insert into clare_groups (label, budget_pct, created_at) values (${label}, ${share}, ${ctx.now}) returning id`;
+  if (ids) await setMembers(ctx, g.id, ids);
+  return { id: g.id };
+}
+
+async function patchGroup(ctx: Authed, id: string, b: Record<string, unknown>) {
+  requireAdmin(ctx);
+  const [row] = await ctx.sql`select * from clare_groups where id = ${id}`;
+  if (!row) throw fail(404, "not_found", "That group is gone.");
+  const g = toGroup(row);
+  const label = b.label === undefined ? g.label : groupLabel(b.label);
+  const share = b.budget_pct === undefined ? g.budget_pct : points(b.budget_pct, "A group's share");
+  const ids = b.device_ids === undefined ? null : await memberIds(ctx, b.device_ids);
+  await ctx.sql`update clare_groups set label = ${label}, budget_pct = ${share} where id = ${g.id}`;
+  if (ids) await setMembers(ctx, g.id, ids);
+  return { id: g.id };
+}
+
+/** Deleting a group only takes its computers out of it; they keep their own caps. */
+async function deleteGroup(ctx: Authed, id: string) {
+  requireAdmin(ctx);
+  const [g] = await ctx.sql<{ id: string }[]>`delete from clare_groups where id = ${id} returning id`;
+  if (!g) throw fail(404, "not_found", "That group is gone.");
   return { ok: true };
 }
 
@@ -902,6 +1036,11 @@ export function createApp(opts: AppOptions) {
       if ((m = route.match(new RegExp(`^/devices/${uuid}$`)))) {
         if (method === "PATCH") return json(200, await patchDevice(a, m[1], b));
         if (method === "DELETE") return json(200, await removeDevice(a, m[1]));
+      }
+      if (method === "POST" && route === "/groups") return json(200, await createGroup(a, b));
+      if ((m = route.match(new RegExp(`^/groups/${uuid}$`)))) {
+        if (method === "PATCH") return json(200, await patchGroup(a, m[1], b));
+        if (method === "DELETE") return json(200, await deleteGroup(a, m[1]));
       }
       if (method === "POST" && (m = route.match(/^\/alerts\/(\d+)\/resolve$/))) return json(200, await resolveAlert(a, m[1]));
 

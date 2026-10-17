@@ -436,6 +436,20 @@ func TestStatusCommand(t *testing.T) {
 		}
 	}
 
+	st = okStatus(30)
+	st.Scope = "group"
+	st.Group = &GroupUse{ID: "g2", Label: "joy", Used: 8.1, Budget: 30, Pct: 27}
+	st.Pct = 27
+	api.setStatus(st)
+	ta.out.Reset()
+	ta.run([]string{"status"})
+	out = ta.out.String()
+	for _, want := range []string{"27% of the joy group's share", "Group", "joy · 8.1% of its 30% share"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("group status missing %q:\n%s", want, out)
+		}
+	}
+
 	st = okStatus(20)
 	st.Basis = "estimate"
 	st.Enforce = false
@@ -458,6 +472,9 @@ func TestStatusCommand(t *testing.T) {
 
 var sharingWords = regexp.MustCompile(`(?i)\b(share[sd]?|sharing|members?|invite[sd]?|invitation|managers?|mom|joy|family)\b`)
 
+// A group's share of the weekly limit is a portion of your own limit, not sharing with people.
+var groupShare = regexp.MustCompile(`(?i)('s|\bweekly|\bits(?: %s)?) share\b`)
+
 func TestCLIHasNoSharingWords(t *testing.T) {
 	files, _ := filepath.Glob("*.go")
 	for _, f := range files {
@@ -465,7 +482,7 @@ func TestCLIHasNoSharingWords(t *testing.T) {
 			continue
 		}
 		data, _ := os.ReadFile(f)
-		text := strings.ReplaceAll(string(data), "/usr/share/zoneinfo", "")
+		text := groupShare.ReplaceAllString(strings.ReplaceAll(string(data), "/usr/share/zoneinfo", ""), "")
 		if w := sharingWords.FindString(text); w != "" {
 			t.Errorf("%s still mentions %q", f, w)
 		}

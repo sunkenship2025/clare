@@ -4,7 +4,7 @@
 // Enrollment codes: #demo (devices enroll after a few seconds), #demo-waiting, #demo-done,
 //                   #demo-expired. Anything else → 404.
 // Dashboard:        dash.html?api=mock#login=anything   (add &empty=1 for no devices,
-//                   &estimate=1 for the estimate basis)
+//                   &estimate=1 for the estimate basis, &nogroups=1 for no groups)
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -25,13 +25,14 @@ function nextMonday930() {
 const RESETS = nextMonday930();
 const ESTIMATE = params.has("estimate");
 const VIEW_ONLY = params.has("viewonly");
+const GROUPS = !params.has("nogroups") && !params.has("empty");
 
 const db = {
   account: {
     name: "My Claude",
     owner_name: "Alex",
     plan: "max5",
-    budget_pct: 90,
+    budget_pct: 100,
     warn_pct: 80,
     enforce: true,
     strict_hooks: false,
@@ -43,13 +44,20 @@ const db = {
   },
   meter: ESTIMATE
     ? null
-    : { seven_day: { pct: 47, resets_at: RESETS }, five_hour: { pct: 18, resets_at: later(3 * HOUR) }, at: ago(6 * MIN), device_label: "MacBook Pro" },
+    : { seven_day: { pct: 47, resets_at: RESETS }, five_hour: { pct: 18, resets_at: later(3 * HOUR) }, at: ago(6 * MIN), device_label: "Pranav's MacBook Air" },
+  // Groups of computers that share part of the weekly limit (computers point at them with group_id).
+  groups: GROUPS
+    ? [
+        { id: "g1", label: "pranav", budget_pct: 50, created_at: ago(9 * DAY) },
+        { id: "g2", label: "joy", budget_pct: 50, created_at: ago(9 * DAY) },
+      ]
+    : [],
   devices: params.has("empty")
     ? []
     : [
-        { id: "d1", kind: "cli", label: "MacBook Pro", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
-        { id: "d2", kind: "extension", parent_id: "d1", label: "Chrome on MacBook Pro", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
-        { id: "d3", kind: "cli", label: "Work ThinkPad", os: "Linux", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(30 * HOUR), budget_pct: 20, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
+        { id: "d1", kind: "cli", label: "Pranav's MacBook Air", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, group_id: GROUPS ? "g1" : null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
+        { id: "d2", kind: "extension", parent_id: "d1", label: "Chrome on Pranav's MacBook Air", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
+        { id: "d3", kind: "cli", label: "joy's Claude Code", os: "Windows", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(3 * MIN), budget_pct: null, group_id: GROUPS ? "g2" : null, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
         { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
         { id: "d5", kind: "cli", label: "Old iMac", os: "macOS", browser: null, created_at: ago(40 * DAY), last_seen_at: ago(50 * HOUR), removed_at: ago(48 * HOUR), budget_pct: null, points: 0, credits: 0, by_model: {} },
       ],
@@ -57,7 +65,6 @@ const db = {
     ? []
     : [
         { id: 3, kind: "config_changed", device_id: "d4", message: "clare's files on Mac mini were changed (hook settings missing). It restored what it could.", created_at: ago(40 * MIN) },
-        { id: 2, kind: "device_offline", device_id: "d3", message: "Work ThinkPad hasn't checked in for over a day, so its budget can't be verified.", created_at: ago(6 * HOUR) },
         { id: 1, kind: "unobserved_usage", device_id: null, message: "About 3% of this week's limit was used where clare couldn't see it: the phone app, another browser, claude.ai/code, or a computer without clare.", created_at: ago(20 * HOUR) },
       ],
   codes: new Map(), // code -> { mode, started, devices, expires_at }
@@ -191,6 +198,7 @@ function me() {
       estimation: { browser_weight: 1.6, learned: { cli: 14.2, web: 4.1 }, min_points: 3 },
     },
     status: status(),
+    groups: db.groups.map((g) => ({ ...g })),
     devices: db.devices.map((d) => ({
       id: d.id,
       kind: d.kind,
@@ -206,6 +214,7 @@ function me() {
       admin: !!d.admin,
       budget_pct: d.budget_pct,
       parent_id: d.parent_id || null,
+      group_id: d.group_id || null,
       usage: { points: d.points, credits: d.credits, by_model: d.by_model },
     })),
     alerts: db.alerts.filter((x) => !x.resolved_at).map((x) => ({
@@ -264,7 +273,33 @@ export async function handle({ method, path, body, token }) {
     const code = `mock${(++db.seq).toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const expires_at = later(7 * DAY);
     db.codes.set(code, { mode: "progressive", started: null, devices: [], expires_at });
-    return ok({ code, admin: body?.admin === true, expires_at });
+    return ok({ code, admin: body?.admin === true, group_id: body?.group_id || null, expires_at });
+  }
+
+  if (parts[0] === "groups") {
+    const g = parts[1] ? db.groups.find((x) => x.id === parts[1]) : null;
+    if (parts[1] && !g) return err(404, "not_found", "That group is gone.");
+    if (method === "DELETE" && g) {
+      db.groups = db.groups.filter((x) => x !== g);
+      for (const d of db.devices) if (d.group_id === g.id) d.group_id = null;
+      return ok({ ok: true });
+    }
+    if ((method === "POST" && !g) || (method === "PATCH" && g)) {
+      const label = typeof body?.label === "string" ? body.label.trim().slice(0, 40) : g?.label;
+      if (!label) return err(400, "bad_label", "Give the group a name.");
+      const share = body?.budget_pct === undefined ? g?.budget_pct : Number(body.budget_pct);
+      if (!(share >= 1 && share <= 100)) return err(400, "bad_budget", "A group's share has to be between 1% and 100%.");
+      const group = g || { id: `g${++db.seq}`, created_at: new Date().toISOString() };
+      Object.assign(group, { label, budget_pct: share });
+      if (!g) db.groups.push(group);
+      if (Array.isArray(body?.device_ids)) {
+        for (const d of db.devices) {
+          if (body.device_ids.includes(d.id)) d.group_id = group.id;
+          else if (d.group_id === group.id) d.group_id = null;
+        }
+      }
+      return ok({ id: group.id });
+    }
   }
 
   if (parts[0] === "devices" && parts[1]) {
@@ -274,6 +309,7 @@ export async function handle({ method, path, body, token }) {
       if (typeof body?.label === "string" && body.label.trim()) d.label = body.label.trim().slice(0, 80);
       if (typeof body?.admin === "boolean") d.admin = body.admin;
       if (body?.parent_id !== undefined) d.parent_id = body.parent_id;
+      if (body?.group_id !== undefined) d.group_id = body.group_id;
       if (body?.budget_pct === null) d.budget_pct = null;
       else if (body?.budget_pct !== undefined) {
         const v = Number(body.budget_pct);
