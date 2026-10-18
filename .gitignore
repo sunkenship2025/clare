@@ -8,6 +8,7 @@ supabase/.temp/
 supabase/.branches/
 .claude/scheduled_tasks.lock
 .clare-extension-key.pem
+.clare-update-key.pem
 
 # Filled by scripts/build.mjs for release builds
 cli/ext/*

@@ -5,6 +5,7 @@
 #   scripts/setup.sh login    # lost your dashboard link? get a fresh one
 #   scripts/setup.sh deploy   # redeploy the backend after pulling changes
 #   scripts/setup.sh relay    # add a Cloudflare relay for networks that block supabase.co
+#   scripts/setup.sh updates  # let computers update themselves from signed releases
 #
 # Needs: node, git, gh (GitHub CLI), openssl, curl. Free accounts on Supabase and GitHub.
 # Secrets it creates are kept in .clare-secret (git-ignored) on this computer only.
@@ -49,6 +50,13 @@ deploy_relay() {
   curl -fsS "$RELAY_URL/health" >/dev/null && info "✓ relay is live at $RELAY_URL"
 }
 
+# Computers update themselves from releases signed with this key (docs/ARCHITECTURE.md → Updates).
+# The private half stays in .clare-update-key.pem (git-ignored) and the CLARE_SIGNING_KEY Actions secret.
+update_key() {
+  node scripts/update-key.mjs
+  gh secret set CLARE_SIGNING_KEY < .clare-update-key.pem
+}
+
 dashboard_link() {
   code=$(curl -fsS -X POST "$(api_url)/recover" -H 'content-type: application/json' \
     -d "{\"secret\":\"$SETUP_SECRET\"}" | json 'j=>j.login_code')
@@ -69,8 +77,9 @@ case "${1:-setup}" in
   login) dashboard_link; exit 0 ;;
   deploy) deploy_backend; [ -z "${RELAY_URL:-}" ] || deploy_relay; exit 0 ;;
   relay) deploy_relay; info "Commit clare.config.json and push a new version tag so new downloads use it."; exit 0 ;;
+  updates) update_key; info "Commit clare.config.json and push a new version tag. Computers on that version and later update themselves."; exit 0 ;;
   setup) ;;
-  *) echo "usage: scripts/setup.sh [setup|login|deploy|relay]"; exit 2 ;;
+  *) echo "usage: scripts/setup.sh [setup|login|deploy|relay|updates]"; exit 2 ;;
 esac
 
 need node "https://nodejs.org"
@@ -133,6 +142,7 @@ cat > clare.config.json <<EOF
   "extensionUrl": "$EXT_URL"
 }
 EOF
+node scripts/update-key.mjs >/dev/null
 git add -A
 git commit -qm "Configure clare for $GH_USER" || true
 if gh repo view "$GH_USER/$REPO" >/dev/null 2>&1; then
@@ -142,6 +152,7 @@ else
   # Public: GitHub Pages and release downloads need it (nothing secret is in the repo).
   gh repo create "$GH_USER/$REPO" --public --source . --remote origin --push
 fi
+gh secret set CLARE_SIGNING_KEY -R "$GH_USER/$REPO" < .clare-update-key.pem
 gh api -X POST "repos/$GH_USER/$REPO/pages" -f build_type=workflow >/dev/null 2>&1 ||
   gh api -X PUT "repos/$GH_USER/$REPO/pages" -f build_type=workflow >/dev/null 2>&1 || true
 # Releases are built from version tags; let them publish the site (Pages allows only main by default).

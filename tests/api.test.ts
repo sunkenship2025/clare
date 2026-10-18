@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.6");
+  assert.equal(r.data.version, "0.2.7");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");
@@ -776,4 +776,10 @@ test("a day without a meter reading raises one alert; the next reading clears it
   assert.equal(stale((await me()).alerts).length, 0);
   later(24 * HOUR + MIN);
   assert.equal(stale((await me()).alerts).length, 1);
+});
+
+test("/me shows which clare version each computer runs", async () => {
+  await call("POST", "/heartbeat", { token: s.studio, body: { info: { version: "0.2.7" } } });
+  const r = await call("GET", "/me", { token: s.web });
+  assert.equal(dev(r.data, "Studio").version, "0.2.7");
 });

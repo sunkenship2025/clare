@@ -58,6 +58,14 @@ func (a *App) runDoctor() int {
 		}
 	}
 
+	if updatesOn() {
+		if p := a.loadUpdateState().Problem; p != "" {
+			u.warn("clare " + version + " couldn't update itself last time: " + p)
+		} else {
+			u.ok("clare " + version + " keeps itself up to date")
+		}
+	}
+
 	var resp statusResponse
 	err = a.client(cfg.API, cfg.Token).call(8*time.Second, "POST", "/check", map[string]any{}, &resp)
 	switch {

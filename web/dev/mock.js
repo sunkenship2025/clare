@@ -59,10 +59,10 @@ const db = {
   devices: params.has("empty")
     ? []
     : [
-        { id: "d1", kind: "cli", label: "Pranav's MacBook Air", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, group_id: GROUPS ? "g1" : null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
+        { id: "d1", kind: "cli", label: "Pranav's MacBook Air", admin: true, os: "macOS", version: "0.2.7", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, group_id: GROUPS ? "g1" : null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
         { id: "d2", kind: "extension", parent_id: "d1", label: "Chrome on Pranav's MacBook Air", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
-        { id: "d3", kind: "cli", label: "joy's Claude Code", os: "Windows", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(3 * MIN), budget_pct: null, group_id: GROUPS ? "g2" : null, claims_unobserved: CLAIM, claimed: 3.4, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
-        { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
+        { id: "d3", kind: "cli", label: "joy's Claude Code", os: "Windows", version: "0.2.5", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(3 * MIN), budget_pct: null, group_id: GROUPS ? "g2" : null, claims_unobserved: CLAIM, claimed: 3.4, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
+        { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", version: "0.2.7", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
         { id: "d5", kind: "cli", label: "Old iMac", os: "macOS", browser: null, created_at: ago(40 * DAY), last_seen_at: ago(50 * HOUR), removed_at: ago(48 * HOUR), budget_pct: null, points: 0, credits: 0, by_model: {} },
       ],
   alerts: params.has("empty")
@@ -222,6 +222,7 @@ function me() {
       label: d.label,
       os: d.os,
       browser: d.browser,
+      version: d.version ?? null,
       connectivity: connectivity(d),
       enforcement: enforcement(d),
       problem: d.problem || null,

@@ -859,6 +859,7 @@ async function me(ctx: Authed) {
         label: deviceName(d),
         os: typeof d.info.os === "string" ? d.info.os : null,
         browser: typeof d.info.browser === "string" ? d.info.browser : null,
+        version: typeof d.info.version === "string" ? d.info.version : null,
         connectivity: conn,
         enforcement: enforcement(conn),
         problem: d.problem,

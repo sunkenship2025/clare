@@ -26,6 +26,12 @@ for (const k of ["apiUrl", "webUrl", "releasesUrl"]) {
     process.exit(1);
   }
 }
+// Optional: the public half of the release signing key (scripts/update-key.mjs). With it, computers
+// update themselves from signed releases; without it they never do.
+if (config.updateKey && Buffer.from(config.updateKey, "base64").length !== 32) {
+  console.error('clare.config.json: "updateKey" isn\'t an ed25519 public key. Run: scripts/setup.sh updates');
+  process.exit(1);
+}
 const strip = (u) => String(u).replace(/\/+$/, "");
 const values = {
   __CLARE_API_URL__: strip(config.apiUrl),
@@ -96,6 +102,8 @@ if (!args.has("--no-bin")) {
     `-X main.version=${values.__CLARE_VERSION__}`,
     `-X main.defaultAPI=${values.__CLARE_API_URL__}`,
     `-X main.defaultWeb=${values.__CLARE_WEB_URL__}`,
+    `-X main.defaultReleases=${values.__CLARE_RELEASES_URL__}`,
+    `-X main.updatePublicKey=${config.updateKey ?? ""}`,
   ].join(" ");
   for (const [goos, goarch] of targets) {
     const out = join(DIST, "bin", `clare-${goos}-${goarch}${goos === "windows" ? ".exe" : ""}`);

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -47,6 +49,13 @@ func (a *App) runWatchdog() int {
 	}
 	if resp.Status != nil {
 		_ = writeJSONAtomic(a.systemStatusPath(), statusCache{Status: resp.Status, FetchedAt: a.Now()}, 0o644)
+	}
+
+	// A new version finishes this run itself: its extension folder, its checks, its version in the heartbeat.
+	if a.maybeUpdate() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = exec.CommandContext(ctx, a.binPath(), "watchdog").Run()
 	}
 	return 0
 }

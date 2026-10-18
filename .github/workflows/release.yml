@@ -28,6 +28,10 @@ jobs:
           go-version-file: cli/go.mod
       - name: Build site, extension and binaries from clare.config.json
         run: node scripts/build.mjs
+      - name: Sign the update list (computers only install signed releases)
+        env:
+          CLARE_SIGNING_KEY: ${{ secrets.CLARE_SIGNING_KEY }}
+        run: node scripts/sign-update.mjs
       - name: Publish downloads
         env:
           GH_TOKEN: ${{ github.token }}

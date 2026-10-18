@@ -45,7 +45,7 @@ const noop = { addListener: () => {} };
 globalThis.chrome = {
   runtime: {
     id: "clare-test",
-    getManifest: () => ({ version: "0.2.6" }),
+    getManifest: () => ({ version: "0.2.7" }),
     setUninstallURL: async () => {},
     onInstalled: noop,
     onStartup: noop,

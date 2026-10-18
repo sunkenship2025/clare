@@ -166,9 +166,21 @@ function deviceSub(d) {
     ? ["Claude Code", ...kids.map((k) => browserName(k.browser) || "Browser")].join(" + ")
     : `${browserName(d.browser) || "Browser"} extension`];
   if (os && !deviceLabel(d).includes(os)) parts.push(os);
+  if (d.kind === "cli" && d.version && d.version !== "dev") parts.push(`v${d.version}`);
   if (d.created_at) parts.push(`added ${relTime(d.created_at)}`);
   if (d.admin) parts.push("admin");
   return parts.join(" · ");
+}
+
+/** clare on computers updates itself from this version on; older ones need "Add a device" run once. */
+const SELF_UPDATING = [0, 2, 7];
+
+function needsManualUpdate(d) {
+  if (d.kind !== "cli" || isGone(d) || !d.version) return false;
+  const v = String(d.version).replace(/^v/, "").split(".").map(Number);
+  if (v.length !== 3 || v.some((n) => !Number.isInteger(n))) return false;
+  const i = v.findIndex((n, k) => n !== SELF_UPDATING[k]);
+  return i >= 0 && v[i] < SELF_UPDATING[i];
 }
 
 function connectivityLine(d) {
@@ -738,6 +750,9 @@ function deviceCardHtml(d) {
       </div>
       <p class="dcard-status" data-tone="${c.tone}"><span class="dot dot-${c.dot}" aria-hidden="true"></span>${esc(c.text)}</p>
       ${why ? `<p class="dcard-why">${why}</p>` : ""}
+      ${needsManualUpdate(d)
+        ? `<p class="dcard-why">This computer has clare ${esc(d.version)}, which can't update itself. Run the "Add a device" command on it once, and it keeps itself up to date after that.</p>`
+        : ""}
       <div class="dcard-usage">
         <p class="usage-line"><span class="usage-pct num">${isEstimate() ? "~" : ""}${pts(u.points || 0)}</span>
           <span class="muted">of this week's limit${removed ? ", still counted" : ""}</span></p>

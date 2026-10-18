@@ -32,7 +32,7 @@ or its clare setup changes.
 
 | Path | What |
 |---|---|
-| `clare.config.json` | Deployment config: `apiUrl`, `webUrl`, `releasesUrl`, `extensionUrl`. Filled by `scripts/setup.sh`. |
+| `clare.config.json` | Deployment config: `apiUrl`, `webUrl`, `releasesUrl`, `extensionUrl`, `updateKey` (public half of the release signing key). Filled by `scripts/setup.sh`. |
 | `supabase/migrations/` | Postgres schema. |
 | `supabase/functions/_shared/core.ts` | Pure logic: rates, credits, meter attribution, budgets, status copy. Runs in Deno and Node. |
 | `supabase/functions/_shared/app.ts` | HTTP handler `createApp({ sql, setupSecret, now })` + DB queries (postgres.js). |
@@ -42,6 +42,8 @@ or its clare setup changes.
 | `extension/` | Chrome MV3 extension, no build step. |
 | `web/` | Static site: `index.html`, `enroll.html`, `dash.html`, `bye.html`, `install.sh`, `install.ps1`. |
 | `scripts/build.mjs` | Injects config, builds `dist/web`, `dist/extension` (+zip), `dist/bin/*`. |
+| `scripts/sign-update.mjs` | Release build: writes and signs `dist/bin/update.json` for self-updating computers. |
+| `scripts/update-key.mjs` | Makes the release signing key once (`scripts/setup.sh updates`). |
 
 ## Config injection
 
@@ -58,7 +60,8 @@ Source files use placeholders replaced by `scripts/build.mjs` (and by the dev se
 - extension: `extension/config.js` exports `CONFIG = { apiUrl, webUrl }`; `manifest.json` has `__CLARE_WEB_URL__/*`
   in a content_scripts match and the API origin in host_permissions. Unreplaced placeholders fall back to localhost.
 - CLI: `clare enroll <code> --api <url> --web <url>`; `install.sh` passes both. Stored in the CLI config.
-  Defaults can be baked in with `-ldflags "-X main.defaultAPI=... -X main.defaultWeb=..."`.
+  Defaults can be baked in with `-ldflags "-X main.defaultAPI=... -X main.defaultWeb=..."`; `build.mjs` also bakes in
+  `main.defaultReleases` (`releasesUrl`) and `main.updatePublicKey` (`updateKey`) for self-updating.
 
 ## Model
 
@@ -328,7 +331,7 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
   "status": { /* status for the caller; device = null for dashboards */ },
   "groups": [ { "id": "…", "label": "pranav", "budget_pct": 50, "created_at": "…" } ],   // oldest first
   "devices": [             // active first, then removed in the last 14 days; never web, never replaced
-    { "id": "…", "kind": "cli", "label": "MacBook Air", "os": "macOS", "browser": null,
+    { "id": "…", "kind": "cli", "label": "MacBook Air", "os": "macOS", "browser": null, "version": "0.2.7",
       "connectivity": "online", "enforcement": "active", "problem": null,
       "last_seen_at": "…", "created_at": "…", "removed_at": null,
       "admin": true, "budget_pct": 30, "parent_id": null, "group_id": "…", "claims_unobserved": false,
@@ -377,6 +380,19 @@ usage → count once. Subagents: `<transcript dir>/<session_id>/subagents/*.json
 `workspace.project_dir`, else `cwd`) with the same stdin, never itself, prints its output, and adds one short line:
 `clare · 46% of weekly budget`, with ` · meter read 37h ago` when the meter reading is an hour or more old.
 No network, ≤ 1 s for clare's own work, never fails. `clare status` shows the same age on its "Measured by" row.
+
+**Updates** — after a good heartbeat the watchdog checks the latest release at most every 6 h (state in
+`<sys>/clare/update.json`: `checked_at`, `problem`). `releasesUrl/update.json` is `{ version, files: { "clare-<os>-<arch>[.exe]":
+<sha256> } }`, and `update.json.sig` its base64 ed25519 signature. It installs only when the signature verifies against
+`updatePublicKey`, the version is newer than its own, the download's SHA-256 matches, and the download runs and prints
+`clare <version>`. Unix renames it over the program; Windows renames the running `.exe` to `.exe.old` (deleted on a
+later run) first. Then it refreshes the root-only backup and checksum (so the tamper check keeps the new program) and
+runs the new `clare watchdog`, which rewrites the extension folder and heartbeats its version. Builds without a key or
+`releasesUrl`, and `dev` builds, never update. Signing: `scripts/setup.sh updates` makes `.clare-update-key.pem`
+(git-ignored), puts the public half in `clare.config.json`, and stores the private half as the `CLARE_SIGNING_KEY`
+Actions secret; `release.yml` runs `scripts/sign-update.mjs`, which refuses a key that doesn't match `updateKey`.
+`clare doctor` shows the version and the last update problem. The dashboard shows each computer's version and asks for
+"Add a device" once on computers older than 0.2.7, the first version that updates itself.
 
 Watchdog (`clare watchdog`, root, every 5 min via launchd / systemd timer / scheduled task): verify drop-in +
 binary against backup (restore + report problems), refresh the extension folder when the binary carries a newer

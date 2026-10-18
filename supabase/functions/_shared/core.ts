@@ -1,7 +1,7 @@
 // Pure clare logic: rates, credits, meter readings, attribution, budgets, status copy.
 // No I/O and no runtime-specific APIs, so it runs unchanged in Deno (edge) and Node (dev + tests).
 
-export const VERSION = "0.2.6";
+export const VERSION = "0.2.7";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
