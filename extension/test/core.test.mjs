@@ -270,6 +270,66 @@ test("status copy: plain words for every state and scope", () => {
   assert.equal(C.pctLabel(0), "0%");
 });
 
+test("basis line says how fresh Claude's meter reading is", () => {
+  const now = Date.UTC(2026, 9, 17, 9, 30);
+  const o = { now };
+  const at = (ms) => ({ state: "ok", scope: "account", basis: "meter", meter_at: new Date(now - ms).toISOString() });
+  const MIN = 60_000;
+  assert.equal(C.basisLine(at(20_000), o), "From Claude's official usage meter, read just now.");
+  assert.equal(C.basisLine(at(5 * MIN), o), "From Claude's official usage meter, read 5 min ago.");
+  assert.equal(C.basisLine(at(59 * MIN), o), "From Claude's official usage meter, read 59 min ago.");
+  assert.equal(
+    C.basisLine(at(60 * MIN), o),
+    "Claude's meter was last read 1 hour ago. Usage since then on devices without clare isn't counted yet."
+  );
+  assert.equal(
+    C.basisLine(at(37 * 60 * MIN + 10 * MIN), o),
+    "Claude's meter was last read 37 hours ago. Usage since then on devices without clare isn't counted yet."
+  );
+  assert.equal(C.basisLine(at(3 * 24 * 60 * MIN), o), "Claude's meter was last read 3 days ago. Usage since then on devices without clare isn't counted yet.");
+  // A reading stamped slightly ahead of this clock isn't "in the future".
+  assert.equal(C.basisLine(at(-30_000), o), "From Claude's official usage meter, read just now.");
+  // Older cached statuses have no meter_at; estimates don't have a reading at all.
+  assert.equal(C.basisLine({ state: "ok", basis: "meter" }, o), "From Claude's official usage meter.");
+  assert.equal(C.basisLine({ state: "ok", basis: "meter", meter_at: "garbage" }, o), "From Claude's official usage meter.");
+  assert.match(C.basisLine({ state: "ok", basis: "estimate", meter_at: null }, o), /^Estimated/);
+  assert.equal(C.meterStale(at(5 * MIN), o), false);
+  assert.equal(C.meterStale(at(61 * MIN), o), true);
+  assert.equal(C.meterStale({ basis: "meter" }, o), false);
+  assert.equal(C.meterStale({ basis: "estimate", meter_at: new Date(now - 9e9).toISOString() }, o), false);
+  assert.equal(C.meterStale(null, o), false);
+  for (const ms of [0, 5 * MIN, 2 * 60 * MIN, 5 * 24 * 60 * MIN]) {
+    assert.doesNotMatch(C.basisLine(at(ms), o), /token|credit|\$|quota|API|share|member|invite|manager|paused/i);
+  }
+});
+
+test("which claude.ai org the background meter read uses", () => {
+  const A = "1b4e28ba-2fa1-11d2-883f-0016d3cca427";
+  const B = "2c5f39cb-3fb2-22e3-994f-1127e4ddb538";
+  const D = "3d6a4adc-4ac3-33f4-aa5a-2238f5eec649";
+  assert.equal(C.pickOrg([{ uuid: A, name: "Personal" }]), A);
+  assert.equal(C.pickOrg([{ uuid: A, capabilities: ["api"] }, { uuid: B, capabilities: ["chat", "claude_max"] }]), B);
+  assert.equal(
+    C.pickOrg([
+      { uuid: A, capabilities: ["chat"] },
+      { uuid: B, capabilities: ["chat", "claude_max"] },
+      { uuid: D, capabilities: ["api"] },
+    ]),
+    B
+  );
+  // Two paid chat orgs: not clear which one, so wait for a claude.ai tab to say.
+  assert.equal(C.pickOrg([{ uuid: A, capabilities: ["chat", "claude_pro"] }, { uuid: B, capabilities: ["chat", "claude_max"] }]), null);
+  assert.equal(C.pickOrg([{ uuid: A }, { uuid: B }]), null);
+  assert.equal(C.pickOrg([]), null);
+  assert.equal(C.pickOrg({ uuid: A }), null);
+  assert.equal(C.pickOrg([{ uuid: "../x" }, { id: A }]), A);
+  assert.equal(C.cleanOrg(A), A);
+  assert.equal(C.cleanOrg({ uuid: A }), A);
+  assert.equal(C.cleanOrg("ignored"), null);
+  assert.equal(C.cleanOrg("a/b/c/d/e/f"), null);
+  assert.equal(C.cleanOrg(null), null);
+});
+
 test("statusNotice: one notification per state per week", () => {
   const resets = "2026-10-19T16:00:00.000Z";
   assert.equal(C.statusNotice({ state: "ok", resets_at: resets }), null);

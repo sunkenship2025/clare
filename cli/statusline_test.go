@@ -140,6 +140,25 @@ func TestStatusLineText(t *testing.T) {
 	if got := ta.statusLineText(); got != "clare · 30% of the pranav group's weekly share" {
 		t.Fatalf("group: %q", got)
 	}
+	fresh := ta.clock.Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	st = okStatus(30)
+	st.MeterAt = &fresh
+	cacheStatus(t, ta, st)
+	if got := ta.statusLineText(); got != "clare · 30% of weekly budget" {
+		t.Fatalf("fresh meter: %q", got)
+	}
+	old := ta.clock.Add(-37 * time.Hour).UTC().Format(time.RFC3339)
+	st.MeterAt = &old
+	cacheStatus(t, ta, st)
+	if got := ta.statusLineText(); got != "clare · 30% of weekly budget · meter read 37h ago" {
+		t.Fatalf("stale meter: %q", got)
+	}
+	st = blockedStatus()
+	st.MeterAt = &old
+	cacheStatus(t, ta, st)
+	if got := ta.statusLineText(); got != "clare · weekly budget used up · meter read 37h ago" {
+		t.Fatalf("stale meter, blocked: %q", got)
+	}
 	ta.clock = ta.clock.Add(80 * time.Hour)
 	if got := ta.statusLineText(); got != "" {
 		t.Fatalf("last week's numbers must not show, got %q", got)

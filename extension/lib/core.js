@@ -148,6 +148,39 @@
     return out;
   }
 
+  var ORG_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+  /** A claude.ai organization id (a string, or an org object's uuid/id), or null. */
+  function cleanOrg(v) {
+    var id = v && typeof v === "object" ? v.uuid || v.id : v;
+    return typeof id === "string" && ORG_RE.test(id) ? id : null;
+  }
+
+  /**
+   * Which claude.ai organization's usage meter to read, from GET /api/organizations, or null when
+   * it isn't clear (the worker then waits for a claude.ai tab to say which one is in use).
+   * One org → that one. Several → the only one that can chat (API-only orgs can't); still
+   * several → the only one of those on a Pro or Max plan.
+   */
+  function pickOrg(list) {
+    if (!Array.isArray(list)) return null;
+    var orgs = list.filter(cleanOrg);
+    if (orgs.length === 1) return cleanOrg(orgs[0]);
+    var caps = function (o) {
+      return Array.isArray(o.capabilities) ? o.capabilities : [];
+    };
+    var chat = orgs.filter(function (o) {
+      return caps(o).indexOf("chat") !== -1;
+    });
+    if (chat.length === 1) return cleanOrg(chat[0]);
+    var paid = chat.filter(function (o) {
+      return caps(o).some(function (c) {
+        return /^claude_(pro|max)/.test(String(c));
+      });
+    });
+    return paid.length === 1 ? cleanOrg(paid[0]) : null;
+  }
+
   /** A reading that crossed from a content script, made safe for POST /meter. Null if unusable. */
   function cleanReading(r, now) {
     if (!r || typeof r !== "object") return null;
@@ -166,7 +199,8 @@
 
   // ── Status → words ───────────────────────────────────────────────────────
 
-  var DAY = 24 * 3600 * 1000;
+  var HOUR = 3600 * 1000;
+  var DAY = 24 * HOUR;
 
   /**
    * Should the browser refuse to send? The cached-policy rule: only a status that says
@@ -277,12 +311,44 @@
     return isDeviceScope(status) ? "of this browser's weekly cap" : "of weekly budget used";
   }
 
-  /** Where the numbers come from, in plain words. */
-  function basisLine(status) {
+  /** "just now", "5 min ago", "37 hours ago", "2 days ago". */
+  function agoText(ms) {
+    ms = ms > 0 ? ms : 0;
+    var min = Math.floor(ms / 60000);
+    if (min < 1) return "just now";
+    if (min < 60) return min + " min ago";
+    var hours = Math.floor(ms / HOUR);
+    if (hours < 48) return hours === 1 ? "1 hour ago" : hours + " hours ago";
+    return Math.floor(ms / DAY) + " days ago";
+  }
+
+  // After this long, usage on devices without clare may be missing from the numbers.
+  var METER_STALE_MS = HOUR;
+
+  /** How long ago Claude's meter was last read (ms), or null when the status doesn't say. */
+  function meterAge(status, opts) {
+    if (!status || status.basis === "estimate" || !status.meter_at) return null;
+    var t = Date.parse(status.meter_at);
+    if (!isFinite(t)) return null;
+    return ((opts && opts.now) || Date.now()) - t;
+  }
+
+  /** The meter hasn't been read for an hour or more. */
+  function meterStale(status, opts) {
+    var age = meterAge(status, opts);
+    return age !== null && age >= METER_STALE_MS;
+  }
+
+  /** Where the numbers come from, in plain words, and how fresh they are. */
+  function basisLine(status, opts) {
     if (!status) return "";
-    return status.basis === "estimate"
-      ? "Estimated. Claude's usage meter hasn't been read this week yet."
-      : "From Claude's official usage meter.";
+    if (status.basis === "estimate") return "Estimated. Claude's usage meter hasn't been read this week yet.";
+    var age = meterAge(status, opts);
+    if (age === null) return "From Claude's official usage meter.";
+    if (age >= METER_STALE_MS) {
+      return "Claude's meter was last read " + agoText(age) + ". Usage since then on devices without clare isn't counted yet.";
+    }
+    return "From Claude's official usage meter, read " + agoText(age) + ".";
   }
 
   /** Banner copy on claude.ai: prefer the server's sentence (it already uses local time). */
@@ -386,6 +452,8 @@
     queueAdd: queueAdd,
     parseMeter: parseMeter,
     cleanReading: cleanReading,
+    cleanOrg: cleanOrg,
+    pickOrg: pickOrg,
     isBlocking: isBlocking,
     formatReset: formatReset,
     groupPhrase: groupPhrase,
@@ -394,6 +462,8 @@
     shortLine: shortLine,
     ringCaption: ringCaption,
     basisLine: basisLine,
+    meterStale: meterStale,
+    agoText: agoText,
     bannerText: bannerText,
     statusNotice: statusNotice,
     pctLabel: pctLabel,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -72,11 +73,7 @@ func (a *App) runDoctor() int {
 		u.fail("The server didn't accept this computer: " + err.Error())
 	}
 
-	if r := a.loadReading(); r != nil {
-		u.ok("The status line is reading Claude's official usage meter")
-	} else {
-		u.line("  %s No official usage reading from the status line yet (it appears after a Claude reply on Pro/Max plans)", u.dim("·"))
-	}
+	a.doctorMeter(u, cfg, resp.Status)
 
 	if claudeInstalled(a.GOOS) {
 		u.ok("Claude Code is installed")
@@ -95,6 +92,51 @@ func (a *App) runDoctor() int {
 		u.blank()
 	}
 	return 0
+}
+
+// doctorMeter says whether Claude's usage meter is being read, by any device and by this one, and
+// what to do when it isn't: usage on devices without clare only shows up through the meter.
+func (a *App) doctorMeter(u *ui, cfg *Config, st *Status) {
+	now := a.Now()
+	account, read := st.meterAge(now)
+	fresh := read && account < meterStaleAfter
+	switch {
+	case fresh:
+		u.ok("Claude's usage meter was read " + ago(account))
+	case read:
+		u.warn("Claude's usage meter was last read " + ago(account) + ", so usage on devices without clare isn't counted yet")
+	case st != nil && st.Basis == "estimate":
+		u.line("  %s Claude's usage meter hasn't been read yet this week, so clare is estimating", u.dim("·"))
+	}
+
+	here, ok := a.userReading().age(now)
+	switch {
+	case ok && here < meterAlertAfter:
+		u.ok("Claude Code on this computer read it " + ago(here))
+		return
+	case fresh:
+		u.line("  %s Claude Code on this computer hasn't read it lately, but another device has", u.dim("·"))
+		return
+	case ok:
+		u.warn("Claude Code on this computer last read it " + ago(here))
+	default:
+		u.warn("Claude Code on this computer hasn't read it yet")
+	}
+	u.line("    It's read after each Claude reply in a terminal, on Pro and Max plans. Claude Code in")
+	u.line("    VS Code or the desktop app may not pass it to clare. Use Claude Code in a terminal now")
+	u.line("    and then, or open claude.ai in Chrome with the clare extension.")
+	if len(cfg.Profiles) > 0 {
+		u.line("    Only these Claude Code profiles count: %s.", strings.Join(cfg.Profiles, ", "))
+	}
+}
+
+// userReading is the newest meter reading this computer's status line saved. Under sudo that's
+// in the invoking user's cache, not root's.
+func (a *App) userReading() *Reading {
+	if sudoUser() != "" && !a.TestMode && os.Getenv("CLARE_STATE_DIR") == "" {
+		return loadReadingFile(filepath.Join(stateDirIn(a.GOOS, invokingHome(a.GOOS)), "reading.json"))
+	}
+	return a.loadReading()
 }
 
 // sentence capitalises a short phrase and ends it with a period.

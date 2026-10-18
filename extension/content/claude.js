@@ -88,7 +88,7 @@
       var reading = C.parseMeter(limits[i]);
       if (reading) {
         reading.at = new Date().toISOString();
-        send({ type: "meter", reading: reading });
+        send({ type: "meter", reading: reading, org: org });
         break;
       }
     }
@@ -99,7 +99,8 @@
 
   function maybeReadMeter() {
     if (!org) return;
-    send({ type: "meter-slot" }).then(function (r) {
+    // The org goes along so the worker can read the meter on its own when no tab is open.
+    send({ type: "meter-slot", org: org }).then(function (r) {
       if (!r || !r.go) return;
       fetch("/api/organizations/" + encodeURIComponent(org) + "/usage", {
         credentials: "include",
@@ -113,7 +114,7 @@
           var reading = C.parseMeter(json);
           if (!reading) throw new Error("unknown shape");
           reading.at = new Date().toISOString();
-          send({ type: "meter", reading: reading });
+          send({ type: "meter", reading: reading, org: org });
         })
         .catch(function () {
           send({ type: "meter-failed" });

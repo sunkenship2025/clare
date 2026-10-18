@@ -79,7 +79,7 @@ const dev = (me: { devices: Dev[] }, label: string) => me.devices.find((d) => d.
 test("health reports needs_setup, then setup and one-time login", async () => {
   let r = await call("GET", "/health");
   assert.equal(r.data.needs_setup, true);
-  assert.equal(r.data.version, "0.2.5");
+  assert.equal(r.data.version, "0.2.6");
 
   r = await call("POST", "/check", { token: "clr_x" });
   assert.equal(r.status, 503, "nothing works before setup");
@@ -690,4 +690,90 @@ test("groups: a group's computers share part of the weekly limit", async () => {
   assert.equal(r.data.status.state, "ok");
   assert.equal((await call("DELETE", `/groups/${pranav}`, { token: s.web })).status, 404);
   assert.equal((await call("PATCH", `/groups/${pranav}`, { token: s.web, body: {} })).status, 404);
+});
+
+test("usage clare couldn't see goes to a device added afterwards, when its link asks for that", async () => {
+  const me = async () => (await call("GET", "/me", { token: s.web })).data;
+  type Member = { id: string; claims_unobserved: boolean; usage: { points: number; claimed: number } };
+  const find = (m: { devices: Member[] }, id: string) => m.devices.find((d) => d.id === id)!;
+  const close = (a: number, b: number) => assert.ok(Math.abs(a - b) < 0.01, `${a} ≈ ${b}`);
+
+  // A computer already on clare reads the meter twice; nothing clare saw explains the second rise.
+  let r = await call("POST", "/enroll-code", { token: s.web, body: {} });
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Studio", info: { machine_id: "studio" } } });
+  const studio = (s.studio = r.data.token);
+  const reset = new Date(now.getTime() + 2 * DAY).toISOString();
+  const reading = (pct: number) => ({ at: now.toISOString(), seven_day: { pct, resets_at: reset } });
+  later(MIN);
+  await call("POST", "/meter", { token: studio, body: reading(20) });
+  const before = (await me()).account.unobserved;
+  later(HOUR);
+  r = await call("POST", "/meter", { token: studio, body: reading(30) });
+  assert.equal(r.data.stored, true);
+  const read = now.toISOString();
+  let m = await me();
+  close(m.account.unobserved, before + 10);
+  assert.equal(m.account.claimed, 0);
+
+  // Mom's computer joins a group from a link that takes that usage: it counts toward her and her group.
+  later(MIN);
+  r = await call("POST", "/groups", { token: s.web, body: { label: "family", budget_pct: 40 } });
+  const family = r.data.id;
+  r = await call("POST", "/enroll-code", { token: s.web, body: { group_id: family, claim_unobserved: true } });
+  assert.equal(r.data.claim_unobserved, true);
+  r = await call("POST", "/enroll", { body: { code: r.data.code, kind: "cli", label: "Mom's laptop", info: { machine_id: "mom-1" } } });
+  const momId = r.data.device_id;
+  assert.equal(r.data.status.meter_at, read, "status says when the meter was last read");
+  close(r.data.status.group.used, before + 10);
+  m = await me();
+  close(find(m, momId).usage.claimed, before + 10);
+  close(find(m, momId).usage.points, before + 10);
+  assert.equal(find(m, momId).claims_unobserved, true);
+  assert.equal(m.account.unobserved, 0);
+  close(m.account.claimed, before + 10);
+
+  // Switched off, it's unseen again; switched on from the dashboard, it's back.
+  await call("PATCH", `/devices/${momId}`, { token: s.web, body: { claims_unobserved: false } });
+  m = await me();
+  assert.equal(find(m, momId).usage.points, 0);
+  close(m.account.unobserved, before + 10);
+  await call("PATCH", `/devices/${momId}`, { token: s.web, body: { claims_unobserved: true } });
+  close(find(await me(), momId).usage.claimed, before + 10);
+
+  // The next rise began before she was added, so it's hers too; after that, unseen usage stays unseen.
+  later(HOUR);
+  await call("POST", "/meter", { token: studio, body: reading(31) });
+  later(HOUR);
+  await call("POST", "/meter", { token: studio, body: reading(34) });
+  m = await me();
+  close(find(m, momId).usage.claimed, before + 11);
+  close(m.account.unobserved, 3);
+
+  // Only an admin's link can ask for it.
+  r = await call("POST", "/enroll-code", { token: studio, body: { kind: "extension", claim_unobserved: true } });
+  assert.equal(r.data.claim_unobserved, false);
+});
+
+test("a day without a meter reading raises one alert; the next reading clears it", async () => {
+  type Alert = { kind: string; message: string };
+  const stale = (alerts: Alert[]) => alerts.filter((a) => a.kind === "meter_stale");
+  const me = async () => (await call("GET", "/me", { token: s.web })).data;
+  const resets = (await me()).account.week.resets_at;
+
+  later(23 * HOUR);
+  assert.equal(stale((await me()).alerts).length, 0, "a quiet night isn't worth an alert");
+  later(2 * HOUR);
+  let r = await call("POST", "/heartbeat", { token: s.studio, body: {} });
+  assert.deepEqual(stale(r.data.alerts).map((a) => a.message), [
+    "Claude's usage meter hasn't been read for 25 hours, so usage on devices without clare isn't being counted. " +
+    "Open claude.ai in Chrome on a computer with clare, or use Claude Code in a terminal, and clare will catch up.",
+  ], "heartbeats deliver it, so browsers can show a notification");
+  later(HOUR);
+  assert.equal(stale((await me()).alerts).length, 1, "raised once");
+
+  // Any reading clears it, even one with the same numbers; the next quiet day raises it again.
+  await call("POST", "/meter", { token: s.studio, body: { at: now.toISOString(), seven_day: { pct: 34, resets_at: resets } } });
+  assert.equal(stale((await me()).alerts).length, 0);
+  later(24 * HOUR + MIN);
+  assert.equal(stale((await me()).alerts).length, 1);
 });

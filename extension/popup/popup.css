@@ -227,6 +227,20 @@ main {
   color: var(--muted);
   font-size: 12.5px;
 }
+/* Claude's meter hasn't been read for an hour: usage elsewhere may be missing. */
+.basis.stale {
+  color: var(--ink);
+}
+.basis.stale::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  vertical-align: 1px;
+}
 
 .dot {
   width: 9px;

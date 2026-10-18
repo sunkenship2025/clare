@@ -8,7 +8,7 @@ Send once that budget is used up. Works in Chrome, Edge, Brave and other Chromiu
 |---|---|
 | `manifest.json` | MV3 manifest. Contains URL placeholders — see below. |
 | `config.js` | `CLARE_CONFIG = { apiUrl, webUrl }` (placeholders, localhost fallback). |
-| `sw.js` | Service worker: enrollment, status cache, usage queue + retries, heartbeat (5 min), meter readings, notifications, uninstall URL. |
+| `sw.js` | Service worker: enrollment, status cache, usage queue + retries, heartbeat (5 min), meter readings (from tabs, and on its own every 10 min), notifications, uninstall URL. |
 | `lib/core.js` | Pure helpers (estimates, meter parsing, the blocking rule, status → words, enroll links). Used by the worker, popup, claude.ai content script, tests. |
 | `lib/page.js` | Pure helpers that run *inside* claude.ai's page: URL matchers, SSE parser, size counting. |
 | `content/inject.js` | MAIN world on claude.ai: wraps `fetch` to observe completions + conversation loads, refuses completions while blocked. |
@@ -106,6 +106,21 @@ and the estimates decide which device used it.
 Meter readings go to `POST /meter` in the canonical shape
 `{ at, seven_day: { pct, resets_at }, five_hour?: { pct, resets_at } }`.
 
+The meter is read at most once per 10 minutes, by whichever comes first:
+
+- an open claude.ai tab (`content/claude.js`, every 10 min and after each reply); it backs off
+  for 6h after a failure;
+- the service worker on its own (`meter` alarm, every 10 min), so usage elsewhere (the phone app,
+  a computer without clare) shows up while no claude.ai tab is open. It calls the same usage
+  endpoint with this browser's claude.ai sign-in (`credentials: "include"`), for the org a tab
+  last read (`meterOrg`), or else the one `pickOrg` finds in `GET /api/organizations`: the only
+  org, else the only one that can chat, else the only Pro/Max one, else none until a tab says.
+  Anything but a JSON 200 (signed out, a challenge page, offline) gives the slot back and waits
+  an hour (`meterBgUnavailableUntil`), separately from the tabs' backoff.
+
+The popup says how fresh the numbers are from the status's `meter_at`, and points out when the
+meter hasn't been read for an hour ("Usage since then on devices without clare isn't counted yet").
+
 ## Known limits
 
 - The Claude phone and desktop apps, other browsers, private windows and claude.ai/code can't be seen
@@ -119,7 +134,10 @@ Meter readings go to `POST /meter` in the canonical shape
   loads as `GET …/chat_conversations/<id>?…` with `chat_messages` + `current_leaf_message_uuid`;
   and the usage endpoint `GET /api/organizations/<org>/usage` →
   `{ five_hour: {utilization, resets_at}, seven_day: {utilization, resets_at} }` (percent).
-  Unknown shapes fail quietly; the meter backs off for 6h after a failure.
+  Unknown shapes fail quietly; the meter backs off for 6h after a failure (1h for the background read).
+- **Unverified:** that a service-worker `fetch` to claude.ai carries the claude.ai sign-in cookies and
+  isn't stopped by a challenge page. If it is, the background read fails quietly and tabs still read
+  the meter.
 
 ## Tests
 

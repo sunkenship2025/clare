@@ -12,6 +12,9 @@ const HEARTBEAT_MINUTES = 5;
 const STATUS_STALE_MS = 60 * 1000;
 const METER_EVERY_MS = 10 * 60 * 1000;
 const METER_BACKOFF_MS = 6 * 60 * 60 * 1000;
+const METER_ALARM_MINUTES = 10;
+const METER_BG_BACKOFF_MS = 60 * 60 * 1000;
+const CLAUDE_URL = "https://claude.ai";
 const MAX_BATCH = 500;
 
 // ── storage ───────────────────────────────────────────────────────────────
@@ -291,16 +294,78 @@ async function notifyAlerts(alerts) {
   await save({ seenAlertIds: Array.from(seen).slice(-200) });
 }
 
-/** One meter read per 10 min across all tabs; back off for 6h after a failure. */
-async function meterSlot() {
-  const { meterLastAt = 0, meterUnavailableUntil = 0, token } = await chrome.storage.local.get([
-    "meterLastAt",
-    "meterUnavailableUntil",
-    "token",
-  ]);
+/**
+ * One meter read per 10 min across all tabs and the background read. Each backs off on its own
+ * after a failure (tabs for 6h, the background read for 1h). Returns the slot, or null.
+ */
+async function meterSlot(backoffKey) {
+  const st = await chrome.storage.local.get(["meterLastAt", backoffKey, "token"]);
   const now = Date.now();
-  if (!token || now < meterUnavailableUntil || now - meterLastAt < METER_EVERY_MS) return false;
+  const prev = st.meterLastAt || 0;
+  if (!st.token || now < (st[backoffKey] || 0) || now - prev < METER_EVERY_MS) return null;
   await save({ meterLastAt: now });
+  return { at: now, prev };
+}
+
+/** The claude.ai organization a tab last read the meter for, so the background read can use it. */
+async function rememberOrg(org) {
+  const id = C.cleanOrg(org);
+  if (!id) return;
+  const { meterOrg } = await chrome.storage.local.get("meterOrg");
+  if (meterOrg !== id) await save({ meterOrg: id });
+}
+
+/** GET a claude.ai API path with this browser's claude.ai sign-in. Anything but JSON fails. */
+async function claudeGet(path) {
+  let res;
+  try {
+    res = await fetch(CLAUDE_URL + path, { credentials: "include", headers: { accept: "application/json" } });
+  } catch {
+    return { ok: false, status: 0, json: false, data: null };
+  }
+  const json = /json/i.test(res.headers.get("content-type") || "");
+  let data = null;
+  if (json) {
+    try {
+      data = await res.json();
+    } catch {
+      return { ok: false, status: res.status, json: false, data: null };
+    }
+  }
+  return { ok: res.ok && json, status: res.status, json, data };
+}
+
+/**
+ * Read Claude's usage meter without a claude.ai tab, so usage elsewhere (the phone app, a
+ * computer without clare) shows up within minutes. Uses this browser's claude.ai sign-in.
+ * On a failure (signed out, a challenge page, offline) it gives the slot back and waits an
+ * hour, so open claude.ai tabs keep reading the meter as before.
+ */
+async function backgroundMeter() {
+  const slot = await meterSlot("meterBgUnavailableUntil");
+  if (!slot) return false;
+  const fail = async (forgetOrg) => {
+    const patch = { meterBgUnavailableUntil: Date.now() + METER_BG_BACKOFF_MS };
+    const { meterLastAt } = await chrome.storage.local.get("meterLastAt");
+    if (meterLastAt === slot.at) patch.meterLastAt = slot.prev;
+    await save(patch);
+    if (forgetOrg) await chrome.storage.local.remove("meterOrg");
+    return false;
+  };
+  let { meterOrg: org } = await chrome.storage.local.get("meterOrg");
+  if (!org) {
+    const r = await claudeGet("/api/organizations");
+    org = r.ok ? C.pickOrg(r.data) : null;
+    if (!org) return fail(false);
+    await save({ meterOrg: org });
+  }
+  const r = await claudeGet("/api/organizations/" + encodeURIComponent(org) + "/usage");
+  // claude.ai itself saying no to this org (not a challenge page): pick again next time.
+  if (!r.ok) return fail(r.json && (r.status === 403 || r.status === 404));
+  const reading = C.parseMeter(r.data);
+  if (!reading) return fail(false);
+  reading.at = new Date().toISOString();
+  await sendMeter(reading);
   return true;
 }
 
@@ -338,6 +403,9 @@ function ensureAlarms() {
   chrome.alarms.get("heartbeat", (a) => {
     if (!a) chrome.alarms.create("heartbeat", { periodInMinutes: HEARTBEAT_MINUTES, delayInMinutes: 0.5 });
   });
+  chrome.alarms.get("meter", (a) => {
+    if (!a) chrome.alarms.create("meter", { periodInMinutes: METER_ALARM_MINUTES, delayInMinutes: 1 });
+  });
 }
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -362,6 +430,7 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "heartbeat") heartbeat();
   else if (alarm.name === "flush") flush();
+  else if (alarm.name === "meter") backgroundMeter();
 });
 
 chrome.notifications.onClicked.addListener((id) => {
@@ -400,11 +469,13 @@ const handlers = {
     return { ok: true };
   },
   async meter(msg) {
+    await rememberOrg(msg.org);
     await sendMeter(msg.reading);
     return { ok: true };
   },
-  async "meter-slot"() {
-    return { go: await meterSlot() };
+  async "meter-slot"(msg) {
+    await rememberOrg(msg.org);
+    return { go: !!(await meterSlot("meterUnavailableUntil")) };
   },
   async "meter-failed"() {
     await save({ meterUnavailableUntil: Date.now() + METER_BACKOFF_MS });
@@ -422,6 +493,9 @@ const handlers = {
     return publicState();
   },
 };
+
+// Each time the worker wakes: alarms can be missing after an update or a browser restart.
+ensureAlarms();
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id || !msg || !handlers[msg.type]) return false;

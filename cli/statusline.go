@@ -143,12 +143,25 @@ func (a *App) statusLineText() string {
 	case st.Scope == "group" && st.Group != nil:
 		whose = groupPhrase(st.Group.Label) + "'s weekly share"
 	}
+	// An old meter reading may be missing usage elsewhere, so say how old it is.
+	stale := ""
+	if age, ok := st.meterAge(a.Now()); ok && st.Basis == "meter" && age >= meterStaleAfter {
+		stale = " · meter read " + shortAgo(age)
+	}
 	if st.State == "blocked" {
-		return "clare · " + whose + " used up"
+		return "clare · " + whose + " used up" + stale
 	}
 	approx := ""
 	if st.Basis == "estimate" {
 		approx = "~"
 	}
-	return fmt.Sprintf("clare · %s%.0f%% of %s", approx, math.Floor(math.Max(0, st.Pct)), whose)
+	return fmt.Sprintf("clare · %s%.0f%% of %s%s", approx, math.Floor(math.Max(0, st.Pct)), whose, stale)
+}
+
+// shortAgo: "3h ago", "2d ago", for the status line.
+func shortAgo(d time.Duration) string {
+	if d < 48*time.Hour {
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }

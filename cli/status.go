@@ -98,9 +98,16 @@ func (a *App) runStatus() int {
 	if t, ok := st.resetsAt(); ok {
 		u.line(row, "Resets", friendlyTime(t, a.Now()))
 	}
-	if st.Basis == "estimate" {
+	age, read := st.meterAge(a.Now())
+	switch {
+	case st.Basis == "estimate":
 		u.line(row, "Measured by", "estimate (no official usage reading yet this week)")
-	} else {
+	case read && age >= meterStaleAfter:
+		u.line(row, "Measured by", u.yellow("Claude's official usage meter · last read "+ago(age)))
+		u.line(row, "", u.dim("Usage since then on devices without clare isn't counted yet."))
+	case read:
+		u.line(row, "Measured by", "Claude's official usage meter · read "+ago(age))
+	default:
 		u.line(row, "Measured by", "Claude's official usage meter")
 	}
 	if st.Enforce {

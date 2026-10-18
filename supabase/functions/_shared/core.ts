@@ -1,7 +1,7 @@
 // Pure clare logic: rates, credits, meter readings, attribution, budgets, status copy.
 // No I/O and no runtime-specific APIs, so it runs unchanged in Deno (edge) and Node (dev + tests).
 
-export const VERSION = "0.2.5";
+export const VERSION = "0.2.6";
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -280,9 +280,10 @@ export function learnRates(prev: LearnedRates | null | undefined, samples: Sampl
 }
 
 export interface DeviceUsage {
-  points: number; // attributed + pending
+  points: number; // attributed + pending + claimed
   attributed: number;
   pending: number;
+  claimed: number; // usage clare couldn't see from before this device was added, counted toward it
   credits: number;
 }
 
@@ -292,7 +293,8 @@ export interface Attribution {
   used: number; // account points: official meter (running max) + pending, or Σ estimate
   meter_pct: number | null; // official weekly %, running max, null on estimate basis
   observed: number; // attributed to enrolled devices
-  unobserved: number; // meter rises with no clare activity behind them
+  unobserved: number; // meter rises clare's activity doesn't explain, not claimed by a device
+  claimed: number; // unseen usage counted toward the device added after it (see AttributionInput.claims)
   before_clare: number; // already used this week when clare was set up
   pending: number; // activity the meter doesn't show yet, estimated
   points_per_credit: number;
@@ -301,6 +303,15 @@ export interface Attribution {
   devices: Map<string, DeviceUsage>;
   samples: Sample[]; // this week's single-source rises, for learnRates
 }
+
+/**
+ * A rise is split between the devices active since the last one, but no device is charged more
+ * than this many times what its own activity should cost; the rest was used where clare couldn't
+ * see it. Loose while the rate is only the plan's guess, tighter once it's learned.
+ */
+export const EXPLAIN_FACTOR = { guess: 10, learned: 5 };
+/** The meter moves in whole points, so up to one point of a rise may be rounding. */
+const ROUNDING_POINTS = 1;
 
 const SAME_WEEK_MS = HOUR_MS;
 
@@ -329,7 +340,13 @@ export interface AttributionInput {
   createdAt: Date; // when clare was set up
   anchor: Date; // fallback week anchor (the last known reset)
   capacity: number; // credits per week, for estimates
+  capacity_learned?: boolean; // capacity was calibrated or set by hand, not the plan's guess
   rates?: LearnedRates | null; // learned per-source rates (see learnRates)
+  /**
+   * Devices that take the usage clare couldn't see from before they were added: an unseen part
+   * of a rise goes to the first such device added after the rise's interval began.
+   */
+  claims?: { device_id: string; until: Date }[];
 }
 
 /**
@@ -349,7 +366,7 @@ export function attribute(i: AttributionInput): Attribution {
   const dev = (id: string | null) => {
     const k = id ?? "";
     let d = devices.get(k);
-    if (!d) devices.set(k, (d = { points: 0, attributed: 0, pending: 0, credits: 0 }));
+    if (!d) devices.set(k, (d = { points: 0, attributed: 0, pending: 0, claimed: 0, credits: 0 }));
     return d;
   };
 
@@ -374,6 +391,7 @@ export function attribute(i: AttributionInput): Attribution {
       meter_pct: null,
       observed: round3(used),
       unobserved: 0,
+      claimed: 0,
       before_clare: 0,
       pending: 0,
       points_per_credit: fallbackPpc,
@@ -406,6 +424,7 @@ export function attribute(i: AttributionInput): Attribution {
   const accSrc: Record<Source, number> = { cli: 0, web: 0 };
   const samples: Sample[] = [];
   let unobserved = 0;
+  let claimed = 0;
   let attributedPoints = 0;
   let attributedCredits = 0;
   let k = 0;
@@ -421,24 +440,43 @@ export function attribute(i: AttributionInput): Attribution {
     }
   };
 
+  const factor = i.capacity_learned || tuned ? EXPLAIN_FACTOR.learned : EXPLAIN_FACTOR.guess;
+  const claims = [...(i.claims ?? [])].sort((a, b) => a.until.getTime() - b.until.getTime());
+  let slack = ROUNDING_POINTS; // rounding room, carried between rises but never more than a point
+  let since = Math.max(from, start); // when the current rise's interval began
   for (const r of walk) {
     take(r.at.getTime());
     const rise = r.week_pct - max;
     if (rise <= 1e-9) continue; // same step or a dip: keep accumulating
-    if (accTotal > 0) {
-      for (const [id, c] of acc) dev(id).attributed += (rise * c) / accTotal;
+    const room = accTotal > 0 ? factor * accTotal * fallbackPpc : 0;
+    const explained = accTotal > 0 ? Math.min(rise, room + slack) : 0;
+    if (explained > 0) {
+      for (const [id, c] of acc) dev(id).attributed += (explained * c) / accTotal;
+      slack = Math.min(ROUNDING_POINTS, room + slack - explained);
+    }
+    // Only rises the activity fully explains teach clare what a credit costs.
+    if (accTotal > 0 && rise <= room + 1e-9) {
       attributedPoints += rise;
       attributedCredits += accTotal;
       // Only one source active: a clean sample of what its credits really cost.
       const solo = accSrc.cli > 0 !== accSrc.web > 0 ? (accSrc.cli > 0 ? "cli" : "web") : null;
       if (solo) samples.push({ source: solo, points: rise, credits: accSrc[solo], at: r.at });
-      acc.clear();
-      accTotal = 0;
-      accSrc.cli = accSrc.web = 0;
-    } else {
-      unobserved += rise;
     }
+    const unseen = rise - explained;
+    if (unseen > 1e-9) {
+      const claim = claims.find((c) => c.until.getTime() > since);
+      if (claim) {
+        dev(claim.device_id).claimed += unseen;
+        claimed += unseen;
+      } else {
+        unobserved += unseen;
+      }
+    }
+    acc.clear();
+    accTotal = 0;
+    accSrc.cli = accSrc.web = 0;
     max = r.week_pct;
+    since = r.at.getTime();
   }
   take(nowMs);
 
@@ -448,7 +486,8 @@ export function attribute(i: AttributionInput): Attribution {
   for (const [id, d] of devices) {
     d.pending = round3((acc.get(id) ?? 0) * ppc);
     d.attributed = round3(d.attributed);
-    d.points = round3(d.attributed + d.pending);
+    d.claimed = round3(d.claimed);
+    d.points = round3(d.attributed + d.pending + d.claimed);
     pending += d.pending;
     observed += d.attributed;
   }
@@ -460,6 +499,7 @@ export function attribute(i: AttributionInput): Attribution {
     meter_pct: max,
     observed: round3(observed),
     unobserved: round3(unobserved),
+    claimed: round3(claimed),
     before_clare: round3(beforeClare),
     pending: round3(pending),
     points_per_credit: ppc,
@@ -478,6 +518,7 @@ export interface Status {
   allowed: boolean;
   state: State;
   basis: "meter" | "estimate";
+  meter_at: string | null; // when Claude's official meter was last read (meter basis only)
   scope: "account" | "group" | "device"; // which limit used/limit/pct describe: the one closest to running out
   used: number;
   limit: number;
@@ -497,6 +538,7 @@ export interface StatusInput {
   group?: { id: string; label: string; used: number; budget: number } | null;
   device: { id: string; label: string; used: number; budget: number | null } | null;
   basis: "meter" | "estimate";
+  meter_at?: Date | null;
   resets_at: Date;
   now: Date;
   tz: string;
@@ -579,6 +621,7 @@ export function evaluate(i: StatusInput): Status {
     allowed: state !== "blocked",
     state,
     basis: i.basis,
+    meter_at: i.basis === "meter" && i.meter_at ? i.meter_at.toISOString() : null,
     scope,
     used,
     limit,
@@ -639,6 +682,8 @@ export type Enforcement = "active" | "unverified" | "removed";
 
 export const ONLINE_MS = 12 * 60_000;
 export const OFFLINE_ALERT_MS = 48 * HOUR_MS;
+/** Claude's meter unread this long raises an alert: long enough that a night without Claude doesn't. */
+export const METER_STALE_ALERT_MS = 24 * HOUR_MS;
 
 export function connectivity(
   d: { removed_at: Date | string | null; problem: string | null; last_seen_at: Date | string | null },

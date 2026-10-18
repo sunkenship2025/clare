@@ -21,6 +21,10 @@ func defaultSystemDir(goos string) string {
 // must be writable without root.
 func defaultStateDir(goos string) string {
 	home, _ := os.UserHomeDir()
+	return stateDirIn(goos, home)
+}
+
+func stateDirIn(goos, home string) string {
 	switch goos {
 	case "darwin":
 		return filepath.Join(home, "Library", "Caches", "clare")

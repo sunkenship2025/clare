@@ -220,6 +220,81 @@ test("estimate basis when there is no reading this week", () => {
   assert.equal(a.used, 15);
 });
 
+test("a device isn't charged far more than its activity costs; the rest is unobserved", () => {
+  // Capacity 300 → a credit should cost 1/3 point; on the plan's guess a rise may cost 10× that.
+  const a = attribute({
+    ...base,
+    readings: [reading(10, 1), reading(47, 15)],
+    activity: [act("mac", 5, 3), act("pc", 20, 1.5)],
+  });
+  // pc's 1.5 credits explain at most 10 × 1.5 / 3 = 5 points, plus a point the meter may have rounded.
+  assert.equal(a.devices.get("pc")!.attributed, 6);
+  assert.equal(a.unobserved, 8);
+  assert.equal(a.used, 15);
+  assert.equal(a.attributed_points, 1, "only the rise mac's activity explained teaches the rate");
+  assert.equal(a.attributed_credits, 3);
+  assert.deepEqual(a.samples.map((x) => x.points), [1]);
+});
+
+test("the cap tightens once the rate is learned", () => {
+  const a = attribute({
+    ...base,
+    capacity_learned: true,
+    readings: [reading(10, 6)],
+    activity: [act("pc", 5, 3)],
+  });
+  assert.equal(a.devices.get("pc")!.attributed, 6); // 5 × 3 / 3 = 5, plus a point of rounding
+  const b = attribute({ ...base, capacity_learned: true, readings: [reading(10, 9)], activity: [act("pc", 5, 3)] });
+  assert.equal(b.devices.get("pc")!.attributed, 6);
+  assert.equal(b.unobserved, 3);
+});
+
+test("a whole-point step from a little activity is rounding, but only one point's worth", () => {
+  const a = attribute({
+    ...base,
+    readings: [reading(10, 1), reading(20, 2), reading(30, 3)],
+    activity: [act("pc", 5, 0.03), act("pc", 15, 0.03), act("pc", 25, 0.03)],
+  });
+  // The first step is rounding; after that pc's tiny activity only explains 10 × 0.03 / 3 = 0.1 point
+  // a step, plus what's left of the rounding point.
+  assert.equal(a.devices.get("pc")!.attributed, 1.3); // 1, then 0.1 + 0.1, then 0.1
+  assert.equal(a.unobserved, 1.7);
+});
+
+test("usage clare couldn't see goes to the device added after it, when it asks for it", () => {
+  const readings = [reading(10, 2), reading(30, 10), reading(40, 14)];
+  const activity = [act("mac", 5, 6), act("mom", 35, 3)];
+  const plain = attribute({ ...base, readings, activity });
+  assert.equal(plain.unobserved, 8, "nothing between hours 10 and 30 was seen");
+  assert.equal(plain.devices.get("mom")!.attributed, 4);
+
+  // Mom's computer was added at hour 33 and takes what clare couldn't see before that.
+  const a = attribute({ ...base, readings, activity, claims: [{ device_id: "mom", until: t(33) }] });
+  assert.equal(a.devices.get("mom")!.claimed, 8);
+  assert.equal(a.devices.get("mom")!.points, 12);
+  assert.equal(a.claimed, 8);
+  assert.equal(a.unobserved, 0);
+  assert.equal(a.used, 14);
+
+  // A device added before the unseen usage doesn't take it; the next one added after it does.
+  const early = attribute({ ...base, readings, activity, claims: [{ device_id: "old", until: t(8) }] });
+  assert.equal(early.unobserved, 8);
+  const two = attribute({
+    ...base,
+    readings,
+    activity,
+    claims: [{ device_id: "late", until: t(45) }, { device_id: "mom", until: t(33) }],
+  });
+  assert.equal(two.devices.get("mom")!.claimed, 8);
+  assert.equal(two.devices.get("late")?.claimed ?? 0, 0);
+});
+
+test("estimate basis has nothing to claim", () => {
+  const a = attribute({ ...base, readings: [], activity: [act("mac", 5, 30)], claims: [{ device_id: "mom", until: t(40) }] });
+  assert.equal(a.claimed, 0);
+  assert.equal(a.devices.get("mom")?.points ?? 0, 0);
+});
+
 // ── Status ───────────────────────────────────────────────────
 
 const statusBase = {
@@ -378,8 +453,8 @@ test("older samples fade with a 14-day half-life", () => {
 
 test("learned weights shift the split and the estimates toward the browser", () => {
   const rates = learnRates(null, [
-    { source: "cli", points: 10, credits: 50, at: t(-100) }, // 0.2 / credit
-    { source: "web", points: 10, credits: 25, at: t(-90) }, // 0.4 / credit → browser weighs 2×
+    { source: "cli", points: 10, credits: 20, at: t(-100) }, // 0.5 / credit
+    { source: "web", points: 10, credits: 10, at: t(-90) }, // 1 / credit → browser weighs 2×
   ]);
   const a = attribute({
     ...base,
@@ -392,6 +467,6 @@ test("learned weights shift the split and the estimates toward the browser", () 
   assert.equal(a.devices.get("chrome")!.pending, 2); // 1 credit × weight 2 × this week's 1 point per weighted credit
   const est = attribute({ ...base, rates, readings: [], activity: [cli("mac", 5, 10), web("chrome", 6, 10)] });
   assert.equal(est.basis, "estimate");
-  assert.equal(est.devices.get("mac")!.points, 2); // 10 × 0.2
-  assert.equal(est.devices.get("chrome")!.points, 4); // 10 × 2 × 0.2
+  assert.equal(est.devices.get("mac")!.points, 5); // 10 × 0.5
+  assert.equal(est.devices.get("chrome")!.points, 10); // 10 × 2 × 0.5
 });

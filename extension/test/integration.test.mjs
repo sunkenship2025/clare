@@ -148,10 +148,11 @@ test("service worker against a live API", { skip: !API && "set CLARE_TEST_API to
     assert.equal(me.account.basis, "meter");
     assert.equal(me.account.meter.seven_day.pct, 20);
 
-    // 4. Usage from claude.ai, then the meter moves: the rise is this browser's.
+    // 4. Usage from claude.ai, then the meter moves: the rise is this browser's. (A device is only
+    //    given as much of a rise as its own usage could explain, so this one is big: ~6 credits.)
     r = await chromeFake.send({
       type: "report",
-      event: { key: "web:conv-1:u1", model: "claude-opus-5-5", input: 1000, output: 4000, cache_read: 20000, cache_write: 0, cache_write_1h: 0, at: new Date(Date.now() - 5_000).toISOString(), estimated: true },
+      event: { key: "web:conv-1:u1", model: "claude-opus-5-5", input: 1000, output: 300000, cache_read: 20000, cache_write: 0, cache_write_1h: 0, at: new Date(Date.now() - 5_000).toISOString(), estimated: true },
     });
     assert.equal(r.ok, true);
     assert.equal(chromeFake.store.queue.length, 0, "queue flushed");
@@ -163,6 +164,9 @@ test("service worker against a live API", { skip: !API && "set CLARE_TEST_API to
     dev = me.devices.find((d) => d.id === dev.id);
     assert.ok(Math.abs(dev.usage.points - 5) < 0.01, `the meter rise is this browser's: ${dev.usage.points}`);
     assert.ok(Math.abs(me.account.used - 25) < 0.01, `account used ${me.account.used}`);
+    let fr = await fresh();
+    assert.ok(Date.parse(fr.status.meter_at) > Date.now() - 60_000, `status says when the meter was read: ${fr.status.meter_at}`);
+    assert.equal(C.basisLine(fr.status), "From Claude's official usage meter, read just now.");
 
     // 5. Budget below what's used → the browser blocks, and says so once.
     await call("/settings", { method: "PATCH", token: owner, body: { budget_pct: 10 } });

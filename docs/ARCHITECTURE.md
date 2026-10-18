@@ -109,7 +109,16 @@ truth. Two places read it:
   `rate_limits.five_hour.*` to the **status line** after each assistant message (Pro/Max plans). clare's managed
   `statusLine` saves that reading locally and runs your own status line; hooks send the newest unsent reading
   with `/report`.
-- **Extension**: reads claude.ai's usage endpoint, at most every 10 min and after each reply.
+- **Extension**: reads claude.ai's usage endpoint, at most every 10 min and after each reply. Its service worker
+  also reads it every 10 min with no claude.ai tab open (`credentials: "include"`, the org id saved from the last
+  tab, else the only org from `/api/organizations`); tabs and background share the 10-minute slot, and a failed
+  background read (signed out, a challenge page) backs off 1 h without stopping the tabs' reads.
+
+Usage on devices without clare only shows up once something reads the meter, so `status.meter_at` says when it was
+last read, and every client warns when that's an hour or more ago ("Claude's meter was last read 37 hours ago.
+Usage since then on devices without clare isn't counted yet."). After 24 h (long enough that a night without
+Claude doesn't count) the server raises a `meter_stale` alert, Claude Code sessions are told once, and
+`clare doctor` says whether this computer reads the meter and what to do when nothing does.
 
 Canonical reading (all clients send this shape; the server also accepts `utilization` as an alias for `pct`):
 
@@ -143,15 +152,27 @@ split meter increases between devices, and estimate usage the meter hasn't shown
    the week; its % is reported as `before_clare` (used before clare was set up).
 3. **Walk** readings in time order, keeping the running max. Credits per device from events with
    `at` in `(previous reading, this reading]` accumulate. When the meter rises by `Δ`, `Δ` is split across the
-   accumulated credits in proportion and the accumulator resets. A rise with no accumulated activity is
-   **unobserved**. A reading that doesn't rise leaves the accumulator alone (the meter moves in whole steps).
-   Dips are ignored.
-4. **Pending.** Credits still in the accumulator after the last reading aren't in the meter yet. They're estimated
+   accumulated credits in proportion and the accumulator resets, but only as much of `Δ` as the activity can
+   explain: `factor × credits × rate` plus a rounding allowance, where `rate` is the fallback points per credit below
+   and `factor` is 10 while that's only the plan's guess, 5 once it's calibrated, set by hand or learned. The
+   rounding allowance is one point (the meter moves in whole steps), carried between rises but never more than one.
+   What the activity can't explain, and any rise with no activity at all, was used where clare couldn't see it.
+   A reading that doesn't rise leaves the accumulator alone. Dips are ignored.
+   Only rises the activity fully explains (`Δ ≤ factor × credits × rate`) count as attributed points and credits
+   for calibration and `points_per_credit`, and only they become learning samples, so usage clare couldn't see
+   doesn't inflate what a credit is thought to cost.
+4. **Claims.** A device with `claim_until` (set when it was added with "Count earlier usage toward it", or later in
+   its Edit) takes the unseen part of each rise whose interval began before `claim_until`: the first such device
+   added after the interval began gets it, as `claimed` points that count toward the device, its computer and its
+   group. So someone who used Claude on a computer before clare was on it is charged for it once the computer is
+   added. The first rise after a device is added still began before it, so its unseen part is the device's too.
+   What no device claims is **unobserved**.
+5. **Pending.** Credits still in the accumulator after the last reading aren't in the meter yet. They're estimated
    as `credits × points_per_credit`, where `points_per_credit` = this week's attributed Δ ÷ attributed credits
    (needs ≥ 1 attributed point; otherwise `100 / capacity`).
 
-Results: account `used` = running max + pending; per device `used` = attributed + pending; `unobserved` and
-`before_clare` for the account. `basis: "meter"`.
+Results: account `used` = running max + pending; per device `used` = attributed + pending + claimed; `unobserved`,
+`claimed` and `before_clare` for the account. `basis: "meter"`.
 
 **Estimate basis** (no reading this week, e.g. only API-key usage, or no device has seen the meter yet): week =
 7-day window aligned to `week_anchor` (the last known reset, initially setup time); device `used` =
@@ -177,6 +198,7 @@ uses the learned cli rate instead of `100 / capacity`. `/me` reports it as `acco
   "allowed": true,                 // false only when state is "blocked"
   "state": "ok",                   // "ok" | "warn" | "over" (over budget, enforcement off) | "blocked"
   "basis": "meter",                // "meter" | "estimate"
+  "meter_at": "2026-10-15T20:10:01.000Z", // when Claude's meter was last read; null on estimate basis
   "scope": "account",              // which limit used/limit/pct describe: "account" | "group" | "device"
   "used": 41.6,                    // points
   "limit": 90,                     // points
@@ -240,6 +262,7 @@ usage shows up only as **unobserved**.
 | `config_changed` | a heartbeat first reports problems | `clare's files on MacBook Air were changed (hook settings missing). It restored what it could.` |
 | `device_offline` | a non-web device hasn't been seen for 48 h (checked lazily on /heartbeat and /me; auto-resolved when it's back) | `MacBook Air hasn't checked in for 2 days, so clare can't confirm its budget holds.` |
 | `unobserved_usage` | this week's unobserved points grew by ≥ 1 since the last such alert (at most every 6 h) | `About 3% of this week's limit was used where clare couldn't see it: the phone app, another browser, claude.ai/code, or a computer without clare.` |
+| `meter_stale` | `settings.meter_at` is 24 h old (checked lazily on /heartbeat and /me; once per stretch via `settings.meter_stale_alerted_at`; resolved by the next reading, even an unchanged one) | `Claude's usage meter hasn't been read for 25 hours, so usage on devices without clare isn't being counted. Open claude.ai in Chrome on a computer with clare, or use Claude Code in a terminal, and clare will catch up.` |
 
 Heartbeats return new unresolved alerts since that device's last heartbeat, excluding alerts about the device itself,
 so the extension can show notifications.
@@ -272,9 +295,9 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
 | `POST /heartbeat` | `{ info: {...}, health: { ok, problems: [string] } }` | `{ status, settings: { enforce, strict_hooks }, alerts: [{ id, kind, message, created_at }] }` |
 | `POST /device/remove` | `{ reason }` | `{ ok }` — the device removes itself (`clare uninstall`). |
 | `POST /login-link` | `{}` | `{ code, expires_at }` → open `webUrl/dash.html#login=<code>` (admin only if the caller is) |
-| `POST /enroll-code` | `{ admin?: boolean, kind?: "cli" \| "extension", group_id? }` | `{ code, admin, kind, group_id, expires_at }` → `webUrl/enroll.html#<code>` · **admin**, except `kind: "extension"` (1 h, admin only if the caller is). `POST /enroll` with the wrong kind → `403 wrong_kind`. |
+| `POST /enroll-code` | `{ admin?: boolean, kind?: "cli" \| "extension", group_id?, claim_unobserved?: boolean }` | `{ code, admin, kind, group_id, claim_unobserved, expires_at }` → `webUrl/enroll.html#<code>` · **admin**, except `kind: "extension"` (1 h, admin only if the caller is). `POST /enroll` with the wrong kind → `403 wrong_kind`. |
 | `GET /me` | – | dashboard payload (below) |
-| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null, admin?: boolean, parent_id?: id \| null, group_id?: id \| null }` | `{ ok }` · **admin**. A browser given a computer leaves its own group. `400 bad_group` for a group that's gone. |
+| `PATCH /devices/:id` | `{ label?, budget_pct?: number \| null, admin?: boolean, parent_id?: id \| null, group_id?: id \| null, claims_unobserved?: boolean }` | `{ ok }` · **admin**. A browser given a computer leaves its own group. `400 bad_group` for a group that's gone. `claims_unobserved` on means the usage clare couldn't see from before the device was added. |
 | `DELETE /devices/:id` | – | `{ ok }` — revoke; the device gets `410` next time. · **admin** |
 | `POST /groups` | `{ label, budget_pct, device_ids?: [id] }` | `{ id }` · **admin**. `device_ids` sets exactly which connected computers are in it. |
 | `PATCH /groups/:id` | `{ label?, budget_pct?, device_ids?: [id] }` | `{ id }` · **admin** |
@@ -298,6 +321,7 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
     "used": 41.6,          // points: official meter + pending estimate (or Σ estimate)
     "observed": 30.2,      // attributed to enrolled devices
     "unobserved": 3.1,
+    "claimed": 0,          // unseen usage counted toward devices added after it
     "before_clare": 8,
     "pending": 0.6
   },
@@ -307,8 +331,8 @@ Errors: `{ "error": "<code>", "message": "<human text>" }`. `401 unauthorized` =
     { "id": "…", "kind": "cli", "label": "MacBook Air", "os": "macOS", "browser": null,
       "connectivity": "online", "enforcement": "active", "problem": null,
       "last_seen_at": "…", "created_at": "…", "removed_at": null,
-      "admin": true, "budget_pct": 30, "parent_id": null, "group_id": "…",
-      "usage": { "points": 12.3, "credits": 18.2, "by_model": { "opus": 15.1, "sonnet": 3.1 } } }
+      "admin": true, "budget_pct": 30, "parent_id": null, "group_id": "…", "claims_unobserved": false,
+      "usage": { "points": 12.3, "claimed": 0, "credits": 18.2, "by_model": { "opus": 15.1, "sonnet": 3.1 } } }
   ],
   "alerts": [ { "id": 1, "kind": "device_offline", "message": "…", "created_at": "…", "device_id": "…", "device_label": "…" } ],
   "daily": [ { "date": "2026-10-14", "device_id": "…", "credits": 4.2 } ]     // last 14 days, in X-Clare-TZ
@@ -334,7 +358,9 @@ Files (system dir = `/Library/Application Support/ClaudeCode` | `/etc/claude-cod
   cached status, latest meter reading
 
 Hooks (`clare hook <event>`; JSON on stdin; never crash; always exit 0):
-- `SessionStart` → flush + check, cache status; warn/blocked → `systemMessage`.
+- `SessionStart` → flush + check, cache status; warn/blocked → `systemMessage`. With `UserPromptSubmit`, also says
+  once per session when `status.meter_at` is 24 h old ("Claude's usage meter was last read 30 hours ago, …"): in
+  VS Code or the desktop app, where the status line may not run, that's the only sign in Claude Code.
 - `UserPromptSubmit` → flush unreported usage, `/report` with the newest unsent meter reading (3 s timeout);
   blocked → `{"decision":"block","reason":<message>}`; warn/over → `{"systemMessage":"clare: …"}` once per session.
 - `PreToolUse` → if the cached status blocks → deny (`hookSpecificOutput.permissionDecision: "deny"`,
@@ -349,7 +375,8 @@ usage → count once. Subagents: `<transcript dir>/<session_id>/subagents/*.json
 `rate_limits` as a canonical reading in the user state dir, then runs your own `statusLine.command` from
 `~/.claude/settings.json` or the project's `.claude/settings.json` / `.claude/settings.local.json` (project dir from
 `workspace.project_dir`, else `cwd`) with the same stdin, never itself, prints its output, and adds one short line:
-`clare · 46% of weekly budget`. No network, ≤ 1 s for clare's own work, never fails.
+`clare · 46% of weekly budget`, with ` · meter read 37h ago` when the meter reading is an hour or more old.
+No network, ≤ 1 s for clare's own work, never fails. `clare status` shows the same age on its "Measured by" row.
 
 Watchdog (`clare watchdog`, root, every 5 min via launchd / systemd timer / scheduled task): verify drop-in +
 binary against backup (restore + report problems), refresh the extension folder when the binary carries a newer
@@ -364,7 +391,9 @@ that dir and below; `default` is `~/.claude`. In other profiles hooks exit silen
 status line shows only your own line and never saves that profile's meter reading.
 
 Commands: `enroll`, `browser`, `profile`, `status`, `dashboard` (opens dash via `/login-link`), `doctor`, `uninstall`,
-`version`, `hook`, `statusline`, `watchdog`.
+`version`, `hook`, `statusline`, `watchdog`. `doctor` checks the install, the server, and the meter: when any device
+last read it (`status.meter_at`), when this computer's status line last did (the invoking user's `reading.json`, even
+under sudo), and, when neither is recent, how to get readings (a terminal, claude.ai in Chrome, covered profiles).
 
 **Browser guide** — `enroll` ends with it (unless `--no-browser`), and `clare browser` runs it alone with a fresh
 browser-only code. It finds the Chromium browsers installed (Chrome, Edge, Brave, Arc, Vivaldi, Opera, Chromium) and
@@ -400,7 +429,8 @@ without the bundled extension points at the enroll page's download instead.
 - `dash.html` — overview (official meter, budget bar, basis, reset time, 5-hour window, unobserved and before-clare
   points, group shares), devices (connectivity, enforcement, usage, cap, admin, group, rename, remove) laid out by
   group with each group's share bar and an editor (name, share, computers, delete), "Add a device" (mints an enroll
-  link, optionally for admin devices and into a group), alerts, last-14-days chart by device, settings (names, plan, budget, warn
+  link, optionally for admin devices, into a group, and taking the usage clare couldn't see before the device was
+  added, on by default), a warning when Claude's meter was last read an hour or more ago, alerts, last-14-days chart by device, settings (names, plan, budget, warn
   level, enforce, strict hooks, capacity). Non-admin sessions see the same data, view-only.
 - `bye.html#d=…&s=…` — "clare was removed from this browser" + pings `/bye`.
 - `index.html` — what clare is, link to the dashboard.

@@ -20,6 +20,7 @@ import {
   evaluate,
   fmtPct,
   learnRates,
+  METER_STALE_ALERT_MS,
   modelFamily,
   normalizeEvent,
   normalizeReading,
@@ -92,6 +93,7 @@ interface SettingsRow extends CapacitySettings {
   unobserved_alerted: number;
   unobserved_alert_week: Date | null;
   last_unobserved_alert_at: Date | null;
+  meter_stale_alerted_at: Date | null;
   created_at: Date;
 }
 
@@ -107,6 +109,7 @@ interface DeviceRow {
   budget_pct: number | null;
   parent_id: string | null;
   group_id: string | null;
+  claim_until: Date | null; // takes this week's usage clare couldn't see from before this time
   problem: string | null;
   last_seen_at: Date | null;
   offline_alerted_at: Date | null;
@@ -135,7 +138,13 @@ interface Authed extends Ctx {
   device: DeviceRow;
 }
 
-type AlertKind = "device_enrolled" | "device_removed" | "config_changed" | "device_offline" | "unobserved_usage";
+type AlertKind =
+  | "device_enrolled"
+  | "device_removed"
+  | "config_changed"
+  | "device_offline"
+  | "unobserved_usage"
+  | "meter_stale";
 
 // numeric columns arrive as strings from postgres.js
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
@@ -259,14 +268,19 @@ async function week(ctx: Ctx): Promise<Attribution> {
     from clare_meter_readings where at >= ${since} order by at, id`;
   const activity = await ctx.sql<{ device_id: string | null; at: Date; credits: number; source: Source }[]>`
     select device_id, at, credits::float8 as credits, source from clare_usage where at >= ${since}`;
+  const claims = await ctx.sql<{ id: string; claim_until: Date }[]>`
+    select id, claim_until from clare_devices where claim_until >= ${since}`;
+  const cap = capacity(ctx.settings);
   ctx.attribution = attribute({
     readings: readings.map((r) => ({ at: new Date(r.at), week_pct: r.week_pct, week_resets_at: new Date(r.week_resets_at) })),
     activity: activity.map((a) => ({ device_id: a.device_id, at: new Date(a.at), credits: a.credits, source: a.source })),
     now: ctx.now,
     createdAt: new Date(ctx.settings.created_at),
     anchor: new Date(ctx.settings.week_anchor),
-    capacity: capacity(ctx.settings).value,
+    capacity: cap.value,
+    capacity_learned: cap.source !== "plan",
     rates: ctx.settings.source_rates,
+    claims: claims.map((c) => ({ device_id: c.id, until: new Date(c.claim_until) })),
   });
   return ctx.attribution;
 }
@@ -323,6 +337,7 @@ async function statusFor(ctx: Ctx, device: DeviceRow | null): Promise<Status> {
       }
       : null,
     basis: w.basis,
+    meter_at: s.meter_at ? new Date(s.meter_at) : null,
     resets_at: w.week.end,
     now: ctx.now,
     tz: ctx.tz,
@@ -362,6 +377,22 @@ async function offlineSweep(ctx: Ctx) {
   }
 }
 
+/** Raise a meter_stale alert once per stretch without a meter reading (checked lazily, like offlineSweep). */
+async function meterSweep(ctx: Ctx) {
+  const [row] = await ctx.sql<{ meter_at: Date }[]>`
+    update clare_settings set meter_stale_alerted_at = ${ctx.now}
+    where id = 1 and meter_at < ${new Date(ctx.now.getTime() - METER_STALE_ALERT_MS)}
+      and (meter_stale_alerted_at is null or meter_stale_alerted_at < meter_at)
+    returning meter_at`;
+  if (!row) return;
+  ctx.settings.meter_stale_alerted_at = ctx.now;
+  const hours = Math.floor((ctx.now.getTime() - new Date(row.meter_at).getTime()) / 3_600_000);
+  const quiet = hours < 48 ? `${hours} hours` : `${Math.floor(hours / 24)} days`;
+  await alert(ctx, "meter_stale",
+    `Claude's usage meter hasn't been read for ${quiet}, so usage on devices without clare isn't being counted. ` +
+      "Open claude.ai in Chrome on a computer with clare, or use Claude Code in a terminal, and clare will catch up.");
+}
+
 /** Store a meter reading, then recalibrate and check for unobserved usage. */
 async function storeReading(ctx: Ctx, r: Reading, deviceId: string): Promise<boolean> {
   const s = ctx.settings;
@@ -376,6 +407,7 @@ async function storeReading(ctx: Ctx, r: Reading, deviceId: string): Promise<boo
     ctx.attribution = undefined;
   }
   if (!s.meter_at || r.at >= new Date(s.meter_at)) {
+    const wasStale = s.meter_at && s.meter_stale_alerted_at && new Date(s.meter_stale_alerted_at) >= new Date(s.meter_at);
     const meter = {
       seven_day: { pct: r.week_pct, resets_at: r.week_resets_at.toISOString() },
       five_hour: r.five_pct === null ? null : { pct: r.five_pct, resets_at: r.five_resets_at?.toISOString() ?? null },
@@ -383,6 +415,9 @@ async function storeReading(ctx: Ctx, r: Reading, deviceId: string): Promise<boo
     await ctx.sql`update clare_settings set meter = ${ctx.sql.json(meter as postgres.JSONValue)}, meter_at = ${r.at},
                     meter_device_id = ${deviceId}, week_anchor = ${r.week_resets_at} where id = 1`;
     Object.assign(s, { meter, meter_at: r.at, meter_device_id: deviceId, week_anchor: r.week_resets_at });
+    if (wasStale) {
+      await ctx.sql`update clare_alerts set resolved_at = ${ctx.now} where kind = 'meter_stale' and resolved_at is null`;
+    }
   }
   if (same) return false;
 
@@ -489,9 +524,11 @@ async function findEnrollCode(ctx: Ctx, code: string) {
       kind: "cli" | "extension" | null;
       parent_id: string | null;
       group_id: string | null;
+      claim_unobserved: boolean;
       expires_at: Date;
     }[]
-  >`select code_hash, admin, kind, parent_id, group_id, expires_at from clare_enroll_codes where code_hash = ${hash}`;
+  >`select code_hash, admin, kind, parent_id, group_id, claim_unobserved, expires_at
+    from clare_enroll_codes where code_hash = ${hash}`;
   if (!row) throw fail(404, "invalid_code", "This link isn't valid. Make a new one in the clare dashboard (Add a device).");
   return {
     hash,
@@ -499,6 +536,7 @@ async function findEnrollCode(ctx: Ctx, code: string) {
     kind: row.kind,
     parent_id: row.parent_id,
     group_id: row.group_id,
+    claim_unobserved: row.claim_unobserved === true,
     expired: new Date(row.expires_at) <= ctx.now,
   };
 }
@@ -556,11 +594,13 @@ async function enroll(ctx: Ctx, b: Record<string, unknown>) {
     // The link's group wins (the code's group_id is cleared if that group was deleted); a browser
     // on a computer goes with the computer's group instead.
     const group = parent ? null : c.group_id ?? old.find((d) => d.group_id)?.group_id ?? null;
+    // Taking the usage clare couldn't see before it was added: from the link, or kept from before.
+    const claim = old.find((d) => d.claim_until)?.claim_until ?? (c.claim_unobserved ? ctx.now : null);
     const [d] = await tx<{ id: string }[]>`
       insert into clare_devices (kind, label, info, machine_id, token_hash, bye_hash, enroll_code_hash, admin, budget_pct,
-                                 parent_id, group_id, last_seen_at, created_at, alerts_seen_id)
+                                 parent_id, group_id, claim_until, last_seen_at, created_at, alerts_seen_id)
       values (${kind}, ${label}, ${tx.json(info as postgres.JSONValue)}, ${machineId}, ${await sha256(token)},
-              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${parent}, ${group}, ${ctx.now}, ${ctx.now},
+              ${await sha256(bye)}, ${c.hash}, ${admin}, ${cap}, ${parent}, ${group}, ${claim}, ${ctx.now}, ${ctx.now},
               (select coalesce(max(id), 0) from clare_alerts))
       returning id`;
     if (old.length) {
@@ -685,6 +725,7 @@ async function heartbeat(ctx: Authed, b: Record<string, unknown>) {
       `clare's files on ${deviceName(ctx.device)} were changed (${problem}). It restored what it could.`, ctx.device.id);
   }
   await offlineSweep(ctx);
+  await meterSweep(ctx);
 
   // New alerts for notifications, except ones about this device. Cursor by alert id: snapshot the
   // max first so nothing inserted meanwhile is skipped.
@@ -737,13 +778,15 @@ async function enrollCode(ctx: Authed, b: Record<string, unknown>) {
   const parent = kind === "extension" && ctx.device.kind === "cli" ? ctx.device.id : null;
   // Only an admin can put the new device in a group.
   const group = ctx.device.admin && !parent ? await groupRef(ctx, b.group_id) : null;
-  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, parent_id, group_id, created_at, expires_at)
-                values (${await sha256(code)}, ${admin}, ${kind}, ${parent}, ${group}, ${ctx.now}, ${expires})`;
-  return { code, admin, kind, group_id: group, expires_at: expires };
+  const claim = ctx.device.admin && b.claim_unobserved === true;
+  await ctx.sql`insert into clare_enroll_codes (code_hash, admin, kind, parent_id, group_id, claim_unobserved, created_at, expires_at)
+                values (${await sha256(code)}, ${admin}, ${kind}, ${parent}, ${group}, ${claim}, ${ctx.now}, ${expires})`;
+  return { code, admin, kind, group_id: group, claim_unobserved: claim, expires_at: expires };
 }
 
 async function me(ctx: Authed) {
   await offlineSweep(ctx);
+  await meterSweep(ctx);
   const w = await week(ctx);
   const s = ctx.settings;
 
@@ -790,6 +833,7 @@ async function me(ctx: Authed) {
       used: w.used,
       observed: w.observed,
       unobserved: w.unobserved,
+      claimed: w.claimed,
       before_clare: w.before_clare,
       pending: w.pending,
       // How clare weighs claude.ai's estimated tokens against Claude Code's exact ones.
@@ -825,8 +869,10 @@ async function me(ctx: Authed) {
         budget_pct: d.budget_pct,
         parent_id: d.parent_id,
         group_id: d.group_id,
+        claims_unobserved: d.claim_until != null,
         usage: {
           points: w.devices.get(d.id)?.points ?? 0,
+          claimed: w.devices.get(d.id)?.claimed ?? 0,
           credits: round4(mine.reduce((sum, u) => sum + u.credits, 0)),
           by_model: byModel,
         },
@@ -868,8 +914,12 @@ async function patchDevice(ctx: Authed, id: string, b: Record<string, unknown>) 
   }
   // A browser on a computer goes with the computer's group, so it has none of its own.
   const group = parent ? null : b.group_id === undefined ? d.group_id : await groupRef(ctx, b.group_id);
+  // Switched on later, it still means the usage from before this device was added.
+  const claim = typeof b.claims_unobserved === "boolean"
+    ? (b.claims_unobserved ? d.claim_until ?? d.created_at : null)
+    : d.claim_until;
   await ctx.sql`update clare_devices set label = ${label}, budget_pct = ${cap}, admin = ${admin}, parent_id = ${parent},
-                  group_id = ${group}
+                  group_id = ${group}, claim_until = ${claim}
                 where id = ${d.id}`;
   return { ok: true };
 }

@@ -4,7 +4,9 @@
 // Enrollment codes: #demo (devices enroll after a few seconds), #demo-waiting, #demo-done,
 //                   #demo-expired. Anything else → 404.
 // Dashboard:        dash.html?api=mock#login=anything   (add &empty=1 for no devices,
-//                   &estimate=1 for the estimate basis, &nogroups=1 for no groups)
+//                   &estimate=1 for the estimate basis, &nogroups=1 for no groups,
+//                   &stale=1 for a meter last read 37 hours ago, &claim=1 for a computer that took
+//                   the usage clare couldn't see before it was added)
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -26,6 +28,8 @@ const RESETS = nextMonday930();
 const ESTIMATE = params.has("estimate");
 const VIEW_ONLY = params.has("viewonly");
 const GROUPS = !params.has("nogroups") && !params.has("empty");
+const STALE = params.has("stale");
+const CLAIM = params.has("claim");
 
 const db = {
   account: {
@@ -39,12 +43,12 @@ const db = {
     capacity_manual: null,
     capacity_calibrated: 312,
     before_clare: 6,
-    unobserved: 3.4,
+    unobserved: 3.4, // all of it, before any device takes some (claims_unobserved)
     pending: 0.6,
   },
   meter: ESTIMATE
     ? null
-    : { seven_day: { pct: 47, resets_at: RESETS }, five_hour: { pct: 18, resets_at: later(3 * HOUR) }, at: ago(6 * MIN), device_label: "Pranav's MacBook Air" },
+    : { seven_day: { pct: 47, resets_at: RESETS }, five_hour: { pct: 18, resets_at: later(3 * HOUR) }, at: ago(STALE ? 37 * HOUR : 6 * MIN), device_label: "Pranav's MacBook Air" },
   // Groups of computers that share part of the weekly limit (computers point at them with group_id).
   groups: GROUPS
     ? [
@@ -57,13 +61,16 @@ const db = {
     : [
         { id: "d1", kind: "cli", label: "Pranav's MacBook Air", admin: true, os: "macOS", browser: null, created_at: ago(20 * DAY), last_seen_at: ago(2 * MIN), budget_pct: null, group_id: GROUPS ? "g1" : null, points: 24.1, credits: 76.2, by_model: { opus: 61.0, sonnet: 15.2 } },
         { id: "d2", kind: "extension", parent_id: "d1", label: "Chrome on Pranav's MacBook Air", os: "macOS", browser: "Chrome", created_at: ago(20 * DAY), last_seen_at: ago(1 * MIN), budget_pct: null, points: 6.3, credits: 19.4, by_model: { opus: 12.0, sonnet: 7.4 } },
-        { id: "d3", kind: "cli", label: "joy's Claude Code", os: "Windows", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(3 * MIN), budget_pct: null, group_id: GROUPS ? "g2" : null, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
+        { id: "d3", kind: "cli", label: "joy's Claude Code", os: "Windows", browser: null, created_at: ago(12 * DAY), last_seen_at: ago(3 * MIN), budget_pct: null, group_id: GROUPS ? "g2" : null, claims_unobserved: CLAIM, claimed: 3.4, points: 8.1, credits: 25.8, by_model: { sonnet: 22.1, haiku: 3.7 } },
         { id: "d4", kind: "cli", label: "Mac mini", os: "macOS", browser: null, created_at: ago(6 * DAY), last_seen_at: ago(4 * MIN), budget_pct: null, points: 0.3, credits: 1.1, by_model: { sonnet: 1.1 }, problem: "hook settings missing" },
         { id: "d5", kind: "cli", label: "Old iMac", os: "macOS", browser: null, created_at: ago(40 * DAY), last_seen_at: ago(50 * HOUR), removed_at: ago(48 * HOUR), budget_pct: null, points: 0, credits: 0, by_model: {} },
       ],
   alerts: params.has("empty")
     ? []
     : [
+        ...(STALE
+          ? [{ id: 4, kind: "meter_stale", device_id: null, message: "Claude's usage meter hasn't been read for 37 hours, so usage on devices without clare isn't being counted. Open claude.ai in Chrome on a computer with clare, or use Claude Code in a terminal, and clare will catch up.", created_at: ago(13 * HOUR) }]
+          : []),
         { id: 3, kind: "config_changed", device_id: "d4", message: "clare's files on Mac mini were changed (hook settings missing). It restored what it could.", created_at: ago(40 * MIN) },
         { id: 1, kind: "unobserved_usage", device_id: null, message: "About 3% of this week's limit was used where clare couldn't see it: the phone app, another browser, claude.ai/code, or a computer without clare.", created_at: ago(20 * HOUR) },
       ],
@@ -134,8 +141,16 @@ function capacity() {
 function accountUsed() {
   const a = db.account;
   const observed = db.devices.reduce((s, d) => s + d.points, 0);
-  if (ESTIMATE) return { used: observed, observed, unobserved: 0, before_clare: 0, pending: 0 };
-  return { used: a.before_clare + observed + a.unobserved, observed, unobserved: a.unobserved, before_clare: a.before_clare, pending: a.pending };
+  if (ESTIMATE) return { used: observed, observed, unobserved: 0, claimed: 0, before_clare: 0, pending: 0 };
+  const claimed = Math.min(a.unobserved, db.devices.reduce((s, d) => s + (d.claims_unobserved ? d.claimed || 0 : 0), 0));
+  return {
+    used: a.before_clare + observed + a.unobserved,
+    observed,
+    unobserved: round1(a.unobserved - claimed),
+    claimed,
+    before_clare: a.before_clare,
+    pending: a.pending,
+  };
 }
 
 const round1 = (n) => Math.round(n * 10) / 10;
@@ -158,6 +173,7 @@ function status() {
     allowed: state !== "blocked",
     state,
     basis: ESTIMATE ? "estimate" : "meter",
+    meter_at: db.meter?.at ?? null,
     scope: "account",
     used: round1(used),
     limit: a.budget_pct,
@@ -193,6 +209,7 @@ function me() {
       used: round1(totals.used),
       observed: round1(totals.observed),
       unobserved: totals.unobserved,
+      claimed: totals.claimed,
       before_clare: totals.before_clare,
       pending: totals.pending,
       estimation: { browser_weight: 1.6, learned: { cli: 14.2, web: 4.1 }, min_points: 3 },
@@ -215,7 +232,8 @@ function me() {
       budget_pct: d.budget_pct,
       parent_id: d.parent_id || null,
       group_id: d.group_id || null,
-      usage: { points: d.points, credits: d.credits, by_model: d.by_model },
+      claims_unobserved: !!d.claims_unobserved,
+      usage: { points: d.points + (d.claims_unobserved ? d.claimed || 0 : 0), claimed: d.claims_unobserved ? d.claimed || 0 : 0, credits: d.credits, by_model: d.by_model },
     })),
     alerts: db.alerts.filter((x) => !x.resolved_at).map((x) => ({
       ...x,
@@ -273,7 +291,7 @@ export async function handle({ method, path, body, token }) {
     const code = `mock${(++db.seq).toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const expires_at = later(7 * DAY);
     db.codes.set(code, { mode: "progressive", started: null, devices: [], expires_at });
-    return ok({ code, admin: body?.admin === true, group_id: body?.group_id || null, expires_at });
+    return ok({ code, admin: body?.admin === true, group_id: body?.group_id || null, claim_unobserved: body?.claim_unobserved === true, expires_at });
   }
 
   if (parts[0] === "groups") {
@@ -310,6 +328,7 @@ export async function handle({ method, path, body, token }) {
       if (typeof body?.admin === "boolean") d.admin = body.admin;
       if (body?.parent_id !== undefined) d.parent_id = body.parent_id;
       if (body?.group_id !== undefined) d.group_id = body.group_id;
+      if (typeof body?.claims_unobserved === "boolean") d.claims_unobserved = body.claims_unobserved;
       if (body?.budget_pct === null) d.budget_pct = null;
       else if (body?.budget_pct !== undefined) {
         const v = Number(body.budget_pct);

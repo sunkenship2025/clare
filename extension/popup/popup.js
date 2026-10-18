@@ -53,6 +53,7 @@
       $("device-used").textContent = about + pctOf(dev.used) + (dev.budget != null ? " · cap " + pctOf(dev.budget) : "");
     }
     $("basis").textContent = C.basisLine(status);
+    $("basis").classList.toggle("stale", C.meterStale(status));
 
     $("browser-dot").className = "dot " + (s.offline ? "warn" : "ok");
     $("browser-state").textContent = s.offline ? "Can't reach clare" : "Connected";

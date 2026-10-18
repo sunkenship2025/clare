@@ -24,6 +24,8 @@
 .overview-meta { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; color: var(--muted); font-size: 0.95rem; }
 .overview-meta-item { display: inline-flex; align-items: center; gap: 0.4rem; }
 .overview-meta-item strong { color: var(--ink); font-weight: 600; }
+.overview-meta-item.is-stale { color: var(--warn-ink); align-items: flex-start; }
+.overview-meta-item.is-stale svg { flex: none; margin-top: 0.15rem; }
 
 .account-viz { margin: 0; padding: 1.1rem 1.15rem 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-1); display: grid; gap: 0.85rem; }
 

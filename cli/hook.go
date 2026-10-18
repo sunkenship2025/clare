@@ -74,6 +74,9 @@ func (a *App) runHook(event string) int {
 		case st != nil && (st.State == "warn" || st.State == "over") && a.firstTime(st.State, in.SessionID):
 			notes = append(notes, st.Message)
 		}
+		if age, read := st.meterAge(now); read && age >= meterAlertAfter && a.firstTime("meter_stale", in.SessionID) {
+			notes = append(notes, meterStaleNote(age))
+		}
 		if len(notes) > 0 {
 			a.emit(map[string]any{"systemMessage": "clare: " + strings.Join(notes, "\n")})
 		}
@@ -93,6 +96,13 @@ func (a *App) runHook(event string) int {
 		_, _ = a.sync(cfg, files, 3*time.Second, 4*time.Second, event == "SessionEnd")
 	}
 	return 0
+}
+
+// meterStaleNote: nothing has read Claude's meter for a day, so usage elsewhere goes uncounted. In a
+// terminal this session fixes it with its first reply; in VS Code or the desktop app it can't.
+func meterStaleNote(age time.Duration) string {
+	return "Claude's usage meter was last read " + ago(age) + ", so usage on devices without clare isn't counted yet. " +
+		"It's read when Claude Code replies in a terminal, or when claude.ai is open in Chrome with clare."
 }
 
 // current returns the status to act on and when it was fetched: the fresh one,

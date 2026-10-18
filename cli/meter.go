@@ -35,12 +35,26 @@ func readingID(r *Reading) string {
 	return id
 }
 
-func (a *App) loadReading() *Reading {
+func (a *App) loadReading() *Reading { return loadReadingFile(a.statePath("reading.json")) }
+
+func loadReadingFile(path string) *Reading {
 	var r Reading
-	if readJSONFile(a.statePath("reading.json"), &r) != nil || r.SevenDay == nil || r.SevenDay.ResetsAt == "" {
+	if readJSONFile(path, &r) != nil || r.SevenDay == nil || r.SevenDay.ResetsAt == "" {
 		return nil
 	}
 	return &r
+}
+
+// age is how long ago the status line saw this reading.
+func (r *Reading) age(now time.Time) (time.Duration, bool) {
+	if r == nil {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339, r.At)
+	if err != nil {
+		return 0, false
+	}
+	return max(0, now.Sub(t)), true
 }
 
 // unsentReading returns the saved reading when the server hasn't seen it yet:

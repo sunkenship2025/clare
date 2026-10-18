@@ -287,6 +287,9 @@ function renderTopbar() {
 
 /* ---------- overview: the weekly limit as one bar ---------- */
 
+// An older meter reading may be missing usage on devices without clare.
+const METER_STALE_MS = 60 * 60_000;
+
 function limitSegments(acc) {
   const segs = [];
   if ((acc.before_clare || 0) > 0.05) {
@@ -320,8 +323,9 @@ function overviewHtml() {
   const week = meter?.seven_day;
   const five = meter?.five_hour;
 
+  const stale = meter?.at && Date.now() - new Date(meter.at).getTime() >= METER_STALE_MS;
   const meterLine = week && typeof week.pct === "number"
-    ? `<span class="overview-meta-item">${icon("meter", 16)}<span>Claude's meter read ${esc(relTime(meter.at))}${meter.device_label ? ` on ${esc(meter.device_label)}` : ""}</span></span>`
+    ? `<span class="overview-meta-item ${stale ? "is-stale" : ""}">${icon(stale ? "alert" : "meter", 16)}<span>Claude's meter ${stale ? "was last read" : "read"} ${esc(relTime(meter.at))}${meter.device_label ? ` on ${esc(meter.device_label)}` : ""}${stale ? ". Usage since then on devices without clare isn't counted yet." : ""}</span></span>`
     : `<span class="overview-meta-item">${icon("meter", 16)}No reading of Claude's meter yet this week</span>`;
   const fiveLine = five && typeof five.pct === "number" && (!five.resets_at || new Date(five.resets_at) > new Date())
     ? `<span class="overview-meta-item"><span>5-hour window <strong class="num">${pct(five.pct)}</strong>${five.resets_at ? `, resets ${esc(whenLocal(five.resets_at))}` : ""}</span></span>`
@@ -464,6 +468,7 @@ const ALERT_META = {
   device_offline: { icon: "unplug", tone: "warn" },
   config_changed: { icon: "shield", tone: "bad" },
   unobserved_usage: { icon: "eye", tone: "warn" },
+  meter_stale: { icon: "meter", tone: "warn" },
 };
 
 function alertsHtml(alerts) {
@@ -708,6 +713,7 @@ function deviceCardHtml(d) {
   const worst = members.find((m) => !isGone(m) && m.enforcement === "unverified") || d;
   const c = connectivityLine(d);
   const u = { ...(d.usage || {}), points: computerPoints(d) };
+  const claimed = members.reduce((sum, m) => sum + (m.usage?.claimed || 0), 0);
   if (kids.length) {
     const byModel = {};
     for (const m of members) for (const [k, v] of Object.entries(m.usage?.by_model || {})) byModel[k] = (byModel[k] || 0) + v;
@@ -742,6 +748,7 @@ function deviceCardHtml(d) {
             <p class="small muted">Cap <strong class="num cap-val">${pts(cap)}</strong> of the weekly limit · ${pct(capPct)} of the cap used</p>`
           : ""}
         ${split ? `<p class="usage-split muted small">${esc(split)}</p>` : ""}
+        ${claimed > 0.05 ? `<p class="usage-split muted small">Includes ${esc(pts(claimed))} used before it was added to clare</p>` : ""}
       </div>
       ${kids.length ? `<ul class="dparts" aria-label="Parts of ${esc(deviceLabel(d))}">${members.map(partRowHtml).join("")}</ul>` : ""}
       ${removed || !isAdmin()
@@ -818,6 +825,11 @@ function editorHtml(d) {
         <span><strong>Admin device</strong><br>
         <span class="muted small">Can change the budget, caps and settings, and add or remove devices, from the command line or the dashboard. Other devices only report usage and get a view-only dashboard.</span></span>
       </label>
+      <label class="check-row">
+        <input type="checkbox" name="claim" ${d.claims_unobserved ? "checked" : ""}>
+        <span><strong>${esc(CLAIM_TITLE)}</strong><br>
+        <span class="muted small">${esc(CLAIM_HELP)}</span></span>
+      </label>
       <p class="field-error" data-error hidden></p>
       <div class="editor-foot">
         <button type="button" class="btn btn-sm btn-ghost" data-action="cancel-edit">Cancel</button>
@@ -872,6 +884,7 @@ function wireEditor(id) {
       label: form.elements.label.value.trim() || undefined,
       budget_pct: capped.checked && !linked ? Number(range.value) : null,
       admin: form.elements.admin.checked,
+      claims_unobserved: form.elements.claim.checked,
     };
     if (parentSel) body.parent_id = parentSel.value || null;
     if (groupSel && !linked) body.group_id = groupSel.value || null;
@@ -1177,7 +1190,11 @@ async function dismissAlert(id, btn) {
 
 const addDialog = $("#add-dialog");
 
-async function openAddDialog(admin = false, groupId = null) {
+// "Add a device" and Edit: a device can take the usage clare couldn't see from before it was added.
+const CLAIM_TITLE = "Count earlier usage toward it";
+const CLAIM_HELP = "Usage clare couldn't see this week from before this device was added counts toward it and its group, not as unobserved. Leave it on if Claude was used there before clare.";
+
+async function openAddDialog(admin = false, groupId = null, claim = true) {
   addDialog.innerHTML = `
     <div class="sheet-head">
       <div>
@@ -1189,7 +1206,7 @@ async function openAddDialog(admin = false, groupId = null) {
     <div class="sheet-body"><div class="skel" style="height:3.4rem;border-radius:14px"></div></div>`;
   addDialog.showModal();
   try {
-    const res = await api("/enroll-code", { method: "POST", body: { admin, group_id: groupId } });
+    const res = await api("/enroll-code", { method: "POST", body: { admin, group_id: groupId, claim_unobserved: claim } });
     showAddResult(res);
   } catch (err) {
     addDialog.innerHTML = `
@@ -1202,11 +1219,11 @@ async function openAddDialog(admin = false, groupId = null) {
         <form method="dialog"><button class="btn btn-ghost">Close</button></form>
         <button class="btn btn-primary" id="add-retry">${icon("refresh", 18)}<span>Try again</span></button>
       </div>`;
-    $("#add-retry", addDialog).addEventListener("click", () => openAddDialog(admin, groupId));
+    $("#add-retry", addDialog).addEventListener("click", () => openAddDialog(admin, groupId, claim));
   }
 }
 
-function showAddResult({ code, admin, group_id, expires_at }) {
+function showAddResult({ code, admin, group_id, claim_unobserved, expires_at }) {
   const url = enrollUrl(code);
   addDialog.innerHTML = `
     <div class="sheet-head">
@@ -1234,6 +1251,11 @@ function showAddResult({ code, admin, group_id, expires_at }) {
             <span class="muted small">Computers added with this link join this group. You can move them later.</span>
           </div>`
         : ""}
+      <label class="check-row">
+        <input type="checkbox" id="add-claim" ${claim_unobserved ? "checked" : ""}>
+        <span><strong>${esc(CLAIM_TITLE)}</strong><br>
+        <span class="muted small">${esc(CLAIM_HELP)}</span></span>
+      </label>
     </div>
     <div class="sheet-foot">
       <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">${icon("external", 18)}<span>Add this computer</span></a>
@@ -1244,7 +1266,11 @@ function showAddResult({ code, admin, group_id, expires_at }) {
   const remint = async (el, focusSel, undo) => {
     el.disabled = true;
     try {
-      const body = { admin: $("#add-admin", addDialog).checked, group_id: $("#add-group", addDialog)?.value || null };
+      const body = {
+        admin: $("#add-admin", addDialog).checked,
+        group_id: $("#add-group", addDialog)?.value || null,
+        claim_unobserved: $("#add-claim", addDialog).checked,
+      };
       showAddResult(await api("/enroll-code", { method: "POST", body }));
       $(focusSel, addDialog).focus();
     } catch (err) {
@@ -1256,6 +1282,10 @@ function showAddResult({ code, admin, group_id, expires_at }) {
   $("#add-admin", addDialog).addEventListener("change", (e) => {
     const box = e.currentTarget;
     remint(box, "#add-admin", () => (box.checked = !box.checked));
+  });
+  $("#add-claim", addDialog).addEventListener("change", (e) => {
+    const box = e.currentTarget;
+    remint(box, "#add-claim", () => (box.checked = !box.checked));
   });
   $("#add-group", addDialog)?.addEventListener("change", (e) => {
     const sel = e.currentTarget;

@@ -15,10 +15,11 @@ import (
 // Status mirrors the status object in docs/ARCHITECTURE.md.
 type Status struct {
 	Allowed     bool       `json:"allowed"`
-	State       string     `json:"state"` // ok | warn | over | blocked
-	Basis       string     `json:"basis"` // meter | estimate
-	Scope       string     `json:"scope"` // account | group | device: which limit Used/Limit/Pct describe
-	Used        float64    `json:"used"`  // points (1 point = 1% of the weekly limit)
+	State       string     `json:"state"`    // ok | warn | over | blocked
+	Basis       string     `json:"basis"`    // meter | estimate
+	MeterAt     *string    `json:"meter_at"` // when Claude's official meter was last read; nil on estimates and older servers
+	Scope       string     `json:"scope"`    // account | group | device: which limit Used/Limit/Pct describe
+	Used        float64    `json:"used"`     // points (1 point = 1% of the weekly limit)
 	Limit       float64    `json:"limit"`
 	Pct         float64    `json:"pct"`
 	Account     AccountUse `json:"account"`
@@ -74,6 +75,25 @@ func (s *Status) resetsAt() (time.Time, bool) {
 	}
 	t, err := time.Parse(time.RFC3339, s.ResetsAt)
 	return t, err == nil
+}
+
+// meterStaleAfter: a meter reading older than this may be missing usage on devices without clare.
+// After meterAlertAfter (as long as the server's meter_stale alert) Claude Code sessions are told.
+const (
+	meterStaleAfter = time.Hour
+	meterAlertAfter = 24 * time.Hour
+)
+
+// meterAge is how long ago Claude's official meter was last read, when the server says.
+func (s *Status) meterAge(now time.Time) (time.Duration, bool) {
+	if s == nil || s.MeterAt == nil {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339, *s.MeterAt)
+	if err != nil {
+		return 0, false
+	}
+	return max(0, now.Sub(t)), true
 }
 
 // APIError is a non-2xx answer from the server.

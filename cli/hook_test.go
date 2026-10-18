@@ -450,6 +450,28 @@ func TestStatusCommand(t *testing.T) {
 		}
 	}
 
+	// Says how fresh Claude's meter reading is, and warns when it's old.
+	fresh := ta.clock.Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	st = okStatus(10)
+	st.MeterAt = &fresh
+	api.setStatus(st)
+	ta.out.Reset()
+	ta.run([]string{"status"})
+	if out = ta.out.String(); !strings.Contains(out, "official usage meter · read 5 minutes ago") || strings.Contains(out, "isn't counted") {
+		t.Fatalf("fresh meter:\n%s", out)
+	}
+	old := ta.clock.Add(-37 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	st.MeterAt = &old
+	api.setStatus(st)
+	ta.out.Reset()
+	ta.run([]string{"status"})
+	out = ta.out.String()
+	for _, want := range []string{"last read 37 hours ago", "Usage since then on devices without clare isn't counted yet."} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stale meter missing %q:\n%s", want, out)
+		}
+	}
+
 	st = okStatus(20)
 	st.Basis = "estimate"
 	st.Enforce = false
