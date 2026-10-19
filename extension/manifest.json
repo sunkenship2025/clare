@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "clare",
   "short_name": "clare",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "See your weekly Claude usage against the budget you set, and hold Send on claude.ai once that budget is used up.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "alarms", "notifications"],

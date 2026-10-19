@@ -404,7 +404,12 @@ clauth's `~/.clauth/profiles/<name>/runtime-*`), which may be signed in to other
 limited to some: `sudo clare enroll <code> --profile pranav` or `sudo clare profile pranav` (`--all` undoes it),
 stored as `profiles` in the config. A name matches `…/profiles/<name>/…` or a config dir named that; a path matches
 that dir and below; `default` is `~/.claude`. In other profiles hooks exit silently (no report, no block) and the
-status line shows only your own line and never saves that profile's meter reading.
+status line shows only your own line and never saves that profile's meter reading. Profiles can use one transcripts
+folder (clauth links each runtime's `projects` to `~/.claude/projects`), so a chat can move between accounts and keep
+its transcript. `meter.json` keeps each session's span in a covered profile (`sessions`: `from`, `until`), and only
+replies inside it count: a covered `SessionStart` opens it (a chat resumed from another profile counts from then on,
+not its history), and a `SessionStart` in another profile or a `SessionEnd` closes it (the sweep still catches up
+replies from before, never after).
 
 Commands: `enroll`, `browser`, `profile`, `status`, `dashboard` (opens dash via `/login-link`), `doctor`, `uninstall`,
 `version`, `hook`, `statusline`, `watchdog`. `doctor` checks the install, the server, and the meter: when any device

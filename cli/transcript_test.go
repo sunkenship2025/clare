@@ -24,7 +24,7 @@ func TestScanFileDedupesAndKeepsPartialLine(t *testing.T) {
 	content := userLine("hi") + a + a + a + b + synthetic + zero + partial
 	writeFile(t, path, content)
 
-	events, off, done, err := scanFile(path, 0, time.Time{}, time.Time{})
+	events, off, done, err := scanFile(path, 0, time.Time{}, time.Time{}, time.Time{})
 	if err != nil || !done {
 		t.Fatalf("scan: err=%v done=%v", err, done)
 	}
@@ -42,7 +42,7 @@ func TestScanFileDedupesAndKeepsPartialLine(t *testing.T) {
 	// The rest of the line arrives, plus a new message.
 	d := assistantLine("msg_D", "claude-opus-5-5", 1, 1, 1, 1, 0, now)
 	appendFile(t, path, c[len(c)/2:]+d)
-	events, off2, _, err := scanFile(path, off, time.Time{}, time.Time{})
+	events, off2, _, err := scanFile(path, off, time.Time{}, time.Time{}, time.Time{})
 	if err != nil || len(events) != 2 || events[0].Key != "cc:msg_C" || events[1].Key != "cc:msg_D" {
 		t.Fatalf("second scan: %v %+v", err, events)
 	}
@@ -59,13 +59,13 @@ func TestScanFileSinceAndTruncation(t *testing.T) {
 	fresh := assistantLine("new", "claude-opus-5-5", 1, 1, 0, 0, 0, now)
 	writeFile(t, path, old+fresh)
 
-	events, _, _, _ := scanFile(path, 0, now.Add(-time.Hour), time.Time{})
+	events, _, _, _ := scanFile(path, 0, now.Add(-time.Hour), time.Time{}, time.Time{})
 	if len(events) != 1 || events[0].Key != "cc:new" {
 		t.Fatalf("since filter: %+v", events)
 	}
 
 	// Offset beyond EOF (file replaced) restarts from 0.
-	events, _, _, _ = scanFile(path, 1<<20, time.Time{}, time.Time{})
+	events, _, _, _ = scanFile(path, 1<<20, time.Time{}, time.Time{}, time.Time{})
 	if len(events) != 2 {
 		t.Fatalf("truncation reset: %+v", events)
 	}
@@ -76,7 +76,7 @@ func TestScanFileHandlesHugeLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "big.jsonl")
 	huge := userLine(strings.Repeat("x", 3<<20)) // 3 MB tool result
 	writeFile(t, path, huge+assistantLine("after", "claude-opus-5-5", 1, 2, 0, 0, 0, now))
-	events, _, done, err := scanFile(path, 0, time.Time{}, time.Time{})
+	events, _, done, err := scanFile(path, 0, time.Time{}, time.Time{}, time.Time{})
 	if err != nil || !done || len(events) != 1 {
 		t.Fatalf("huge line: err=%v done=%v events=%+v", err, done, events)
 	}
@@ -148,7 +148,7 @@ func TestRealTranscriptSmoke(t *testing.T) {
 		}
 	}
 
-	events, _, done, err := scanFile(dst, 0, time.Time{}, time.Time{})
+	events, _, done, err := scanFile(dst, 0, time.Time{}, time.Time{}, time.Time{})
 	if err != nil || !done {
 		t.Fatalf("scan real transcript: %v", err)
 	}

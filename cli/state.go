@@ -49,8 +49,9 @@ func (a *App) saveStatusCache(c *statusCache) {
 
 // meterState tracks how far we've read each transcript and what's still unsent.
 type meterState struct {
-	Offsets   map[string]int64 `json:"offsets"`
-	Queue     []Event          `json:"queue"`
+	Offsets   map[string]int64       `json:"offsets"`
+	Sessions  map[string]sessionSpan `json:"sessions,omitempty"` // session id → when it ran in a covered profile
+	Queue     []Event                `json:"queue"`
 	Recent    []string         `json:"recent"`               // keys the server already accepted (ring)
 	ReadingID string           `json:"reading_id,omitempty"` // readingID of the last meter reading the server accepted
 	ReadingTS string           `json:"reading_ts,omitempty"` // that reading's own "at"
@@ -69,7 +70,44 @@ func (a *App) loadMeter() *meterState {
 	if m.Offsets == nil {
 		m.Offsets = map[string]int64{}
 	}
+	if m.Sessions == nil {
+		m.Sessions = map[string]sessionSpan{}
+	}
 	return m
+}
+
+// sessionSpan is when a Claude Code session ran in a profile clare covers. Profiles can use one
+// transcripts folder (clauth links every profile's projects folder to one place), so a chat resumed
+// here brings the replies another profile's account made, and a chat that moves on keeps
+// growing under the path clare already follows. Only replies inside the span count.
+type sessionSpan struct {
+	From  time.Time `json:"from"`
+	Until time.Time `json:"until,omitempty"` // when it moved to another profile or ended
+}
+
+// markSession notes a session starting in a covered profile (here) or leaving one: moving to
+// another profile, or ending.
+func (a *App) markSession(id string, here bool) {
+	if id == "" {
+		return
+	}
+	release, ok := a.lock(2 * time.Second)
+	if !ok {
+		return
+	}
+	defer release()
+	m := a.loadMeter()
+	span, known := m.Sessions[id]
+	switch {
+	case here && (!known || !span.Until.IsZero()):
+		m.Sessions[id] = sessionSpan{From: a.Now()}
+	case !here && known && span.Until.IsZero():
+		span.Until = a.Now()
+		m.Sessions[id] = span
+	default:
+		return // already running here (a compact or a restart after a crash), or never was
+	}
+	_ = a.saveMeter(m)
 }
 
 func (a *App) saveMeter(m *meterState) error {
@@ -164,7 +202,14 @@ func (a *App) collect(cfg *Config, files []string, budget time.Duration, sweep b
 			continue // out of time; next hook picks it up
 		}
 
-		events, newOff, _, err := scanFile(path, off, since, deadline)
+		from, until := since, time.Time{}
+		if span, ok := m.Sessions[sessionOf(path)]; ok {
+			if span.From.After(from) {
+				from = span.From
+			}
+			until = span.Until
+		}
+		events, newOff, _, err := scanFile(path, off, from, until, deadline)
 		if err != nil && len(events) == 0 && newOff == off {
 			continue
 		}
@@ -178,6 +223,16 @@ func (a *App) collect(cfg *Config, files []string, budget time.Duration, sweep b
 	}
 	if len(m.Queue) > maxQueue {
 		m.Queue = m.Queue[len(m.Queue)-maxQueue:]
+	}
+	// A span is kept while its transcripts are followed; one that never got a transcript expires.
+	followed := map[string]bool{}
+	for p := range m.Offsets {
+		followed[sessionOf(p)] = true
+	}
+	for id, s := range m.Sessions {
+		if !followed[id] && now.Sub(s.From) > 8*24*time.Hour {
+			delete(m.Sessions, id)
+		}
 	}
 	_ = a.saveMeter(m)
 }

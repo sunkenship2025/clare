@@ -45,7 +45,15 @@ func (a *App) runHook(event string) int {
 		return 0
 	}
 	if !cfg.profileCovered() {
-		return 0 // another Claude Code profile (another account): not clare's business
+		// Another Claude Code profile (another account): not clare's business. A chat that
+		// moved here from a covered profile stops counting now.
+		if event == "SessionStart" {
+			a.markSession(in.SessionID, false)
+		}
+		return 0
+	}
+	if event == "SessionStart" {
+		a.markSession(in.SessionID, true) // replies from before it ran here aren't this account's
 	}
 
 	files := sessionFiles(in.TranscriptPath, in.SessionID)
@@ -94,6 +102,9 @@ func (a *App) runHook(event string) int {
 
 	case "Stop", "SubagentStop", "SessionEnd":
 		_, _ = a.sync(cfg, files, 3*time.Second, 4*time.Second, event == "SessionEnd")
+		if event == "SessionEnd" {
+			a.markSession(in.SessionID, false)
+		}
 	}
 	return 0
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProfileMatching(t *testing.T) {
@@ -64,6 +65,70 @@ func TestOtherProfilesAreLeftAlone(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".clauth", "profiles", "pranav", "runtime-2-0"))
 	if out := ta.hook(t, "UserPromptSubmit", prompt); !strings.Contains(out, `"decision":"block"`) {
 		t.Fatalf("the covered profile is enforced: %s", out)
+	}
+}
+
+// clauth links every profile's projects folder to one place, so one chat can move between
+// accounts and keep its transcript. Only what it said while in a covered profile counts.
+func TestChatsMovingBetweenProfilesCountOnlyTheirTimeHere(t *testing.T) {
+	api := newFakeAPI(t)
+	ta := newTestApp(t)
+	cfg := ta.install(t, api.srv.URL)
+	cfg.Profiles = []string{"pranav"}
+	_ = ta.saveConfig(cfg)
+
+	root := t.TempDir()
+	shared := filepath.Join(root, ".claude", "projects")
+	runtime := func(profile string) string {
+		dir := filepath.Join(root, ".clauth", "profiles", profile, "runtime-1-0")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(shared, filepath.Join(dir, "projects")); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	god, pranav := runtime("god"), runtime("pranav")
+	transcript := filepath.Join(shared, "-proj", "s.jsonl")
+	subagent := filepath.Join(shared, "-proj", "s", "subagents", "agent-a.jsonl")
+	in := func(rt, id string) map[string]any {
+		t.Setenv("CLAUDE_CONFIG_DIR", rt)
+		return map[string]any{"session_id": id, "transcript_path": filepath.Join(rt, "projects", "-proj", id+".jsonl")}
+	}
+	start := ta.clock
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+
+	// Used in god for a while (another account).
+	ta.hook(t, "SessionStart", in(god, "s"))
+	writeFile(t, transcript, assistantLine("god1", "claude-opus-5-5", 1, 100, 0, 0, 0, at(-30*time.Minute))+
+		assistantLine("god2", "claude-opus-5-5", 1, 100, 0, 0, 0, at(-10*time.Minute)))
+	writeFile(t, subagent, assistantLine("godsub", "claude-haiku-5-5", 1, 100, 0, 0, 0, at(-5*time.Minute)))
+	ta.hook(t, "Stop", in(god, "s"))
+
+	// Resumed in pranav: its history is god's, only new replies count.
+	ta.hook(t, "SessionStart", in(pranav, "s"))
+	appendFile(t, transcript, assistantLine("p1", "claude-opus-5-5", 1, 10, 0, 0, 0, at(time.Minute)))
+	appendFile(t, subagent, assistantLine("psub", "claude-haiku-5-5", 1, 10, 0, 0, 0, at(time.Minute)))
+	ta.clock = at(2 * time.Minute)
+	ta.hook(t, "Stop", in(pranav, "s"))
+
+	// One more reply, then the window closes without a Stop and the chat goes back to god.
+	appendFile(t, transcript, assistantLine("p2", "claude-opus-5-5", 1, 10, 0, 0, 0, at(3*time.Minute)))
+	ta.clock = at(5 * time.Minute)
+	ta.hook(t, "SessionStart", in(god, "s"))
+	appendFile(t, transcript, assistantLine("god3", "claude-opus-5-5", 1, 100, 0, 0, 0, at(6*time.Minute)))
+
+	// Another pranav chat re-checks every transcript it knows: p2 is caught up, god3 isn't counted.
+	ta.clock = at(10 * time.Minute)
+	ta.hook(t, "SessionStart", in(pranav, "other"))
+
+	var keys []string
+	for _, e := range api.events {
+		keys = append(keys, e.Key)
+	}
+	if got := strings.Join(keys, " "); got != "cc:p1 cc:psub cc:p2" {
+		t.Fatalf("reported %q, want only the replies made in pranav", got)
 	}
 }
 

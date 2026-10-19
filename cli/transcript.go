@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -80,10 +81,11 @@ func parseUsageLine(line []byte) (Event, bool) {
 }
 
 // scanFile reads complete lines of a transcript from offset and returns usage
-// events plus the offset just past the last complete line. A partial last line
-// (still being written) is left for next time. It streams, so huge transcripts
-// are fine, and stops early (done=false) when the deadline passes.
-func scanFile(path string, offset int64, since time.Time, deadline time.Time) (events []Event, newOffset int64, done bool, err error) {
+// events made from since until until (zero: no bound) plus the offset just past the
+// last complete line. A partial last line (still being written) is left for next
+// time. It streams, so huge transcripts are fine, and stops early (done=false) when
+// the deadline passes.
+func scanFile(path string, offset int64, since, until time.Time, deadline time.Time) (events []Event, newOffset int64, done bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, offset, true, err
@@ -125,8 +127,8 @@ func scanFile(path string, offset int64, since time.Time, deadline time.Time) (e
 			continue
 		}
 		seen[ev.Key] = true
-		if !since.IsZero() {
-			if t, err := time.Parse(time.RFC3339Nano, ev.At); err == nil && t.Before(since) {
+		if !since.IsZero() || !until.IsZero() {
+			if t, err := time.Parse(time.RFC3339Nano, ev.At); err == nil && (t.Before(since) || !until.IsZero() && !t.Before(until)) {
 				continue
 			}
 		}
@@ -148,4 +150,13 @@ func sessionFiles(transcriptPath, sessionID string) []string {
 		}
 	}
 	return files
+}
+
+// sessionOf is the session a transcript belongs to: <dir>/<id>.jsonl, or a subagent's
+// <dir>/<id>/subagents/agent-….jsonl.
+func sessionOf(path string) string {
+	if dir := filepath.Dir(path); filepath.Base(dir) == "subagents" {
+		return filepath.Base(filepath.Dir(dir))
+	}
+	return strings.TrimSuffix(filepath.Base(path), ".jsonl")
 }
